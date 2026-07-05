@@ -368,7 +368,9 @@ func (a *agent) doTurn(ctx context.Context) {
 				denied = true
 			}
 		}
-		if denied {
+		// If tools were denied, loop again so the LLM sees the denial
+		// and can try an alternative approach. Otherwise the turn is done.
+		if !denied {
 			a.sendCritical(turnDoneMsg{})
 			return
 		}
@@ -492,9 +494,9 @@ func (a *agent) toolResultText(msg openai.ChatCompletionMessageParamUnion) strin
 // can adapt to the user's feedback.
 func toolDeniedMessage(call openai.ChatCompletionMessageToolCall, reason string) openai.ChatCompletionMessageParamUnion {
 	if reason != "" {
-		return openai.ToolMessage("error: the user denied permission: "+reason, call.ID)
+		return openai.ToolMessage("error: the user denied the tool call with reason: "+reason, call.ID)
 	}
-	return openai.ToolMessage("error: the user denied permission to run this command", call.ID)
+	return openai.ToolMessage("error: the user denied the tool call", call.ID)
 }
 
 // toolCancelledMessage creates a tool result for a cancelled tool call.
