@@ -1,4 +1,4 @@
-# minimal runnable agent
+# minimal-agent
 
 A **hobby project**, purely vibe-coded.
 
@@ -7,22 +7,52 @@ written by the agent itself — dogfooding all the way down.
 
 ## What it is
 
-A Go-based CLI coding agent with an OpenAI Chat Completions tool-calling loop,
-built on the official [openai-go](https://github.com/openai/openai-go) SDK.
+A Go-based CLI coding agent with a full-screen TUI, built on the
+[openai-go](https://github.com/openai/openai-go) SDK and
+[Bubble Tea](https://github.com/charmbracelet/bubbletea). It has an OpenAI
+Chat Completions tool-calling loop — the agent streams responses, calls tools,
+and can inspect, build, and rewrite itself.
 
-**Tools:** `bash`, `read`, `write`, `edit` — enough to inspect, build, and
-rewrite itself.
+**Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`
+
+**Features:**
+- Full-screen TUI with markdown rendering, viewport scrolling, and colored diff previews
+- Streaming responses with reasoning/thinking support (collapsible, expand with `Ctrl-O`)
+- Session persistence (auto-save on each turn, auto-resume on startup)
+- Approval flow: state-changing tools prompt `[y/N]` before executing
+- Context window management: token tracking, `/context` display, `/compact` summarization
+- Global config file with hot-reload (`~/.ma/settings.json`)
+- Slash commands with tab-autocomplete and an interactive session picker
 
 ## Run
 
 ```sh
-go run .
+go build -o minimal-agent .
+MA_API_KEY=sk-... ./minimal-agent
 ```
+
+Requires **Go 1.25+**.
 
 Set your API key in `~/.ma/settings.json` (see [Configuration](#configuration)
 below), or via the `MA_API_KEY` environment variable.
 
-Type a request at the `you>` prompt. `Ctrl-D`, `exit`, or `quit` to leave.
+## Slash commands
+
+| Command | Description |
+|---|---|
+| `/save [name]` | Save the current session; optionally rename |
+| `/resume <name>` | Load a saved session (or just `/resume` for picker) |
+| `/new-session [name]` | Start a fresh session |
+| `/list-session` | List all saved sessions with summaries |
+| `/re-summarize` | Regenerate the session title |
+| `/config` | Show current configuration and sources |
+| `/config <key> [value]` | Get/set: `model`, `auto-edit`, `thinking`, `thinking-effort`, `thinking-detail`, `context-window` |
+| `/context` | Show token usage vs. context window |
+| `/compact` | Summarize conversation to free context space |
+| `/model <id>` | Shorthand for `/config model` |
+| `/thinking` | Toggle thinking on/off |
+| `/effort <low\|medium\|high>` | Set reasoning effort |
+| `/help [command]` | List commands or get detailed help |
 
 ## Configuration
 
@@ -30,13 +60,14 @@ Priority (highest to lowest): **CLI flags > session config > `~/.ma/settings.jso
 
 ### CLI flags
 
-| Flag          | Env           | Default                     |
-| ------------- | ------------- | --------------------------- |
-| `-ma-api-key` | `MA_API_KEY`  | (required)                  |
-| `-url`        | `MA_BASE_URL` | `https://api.openai.com/v1` |
-| `-model`      | `MA_MODEL`    | `gpt-4o`                    |
-| `-session`    | `MA_SESSION`  | auto-resume latest          |
-| `-new`        | —             | `false`                     |
+| Flag | Env | Default |
+|---|---|---|
+| `-ma-api-key` | `MA_API_KEY` | (required) |
+| `-url` | `MA_BASE_URL` | `https://api.openai.com/v1` |
+| `-model` | `MA_MODEL` | `gpt-4o` |
+| `-session` | `MA_SESSION` | auto-resume latest |
+| `-new` | — | `false` |
+| `-context-window` | `MA_CONTEXT_WINDOW` | `200000` |
 
 `-session` selects a named session to load or create. `-new` forces a fresh
 timestamped session, ignoring any existing sessions or `-session` flag.
@@ -53,9 +84,17 @@ new settings immediately. All keys are optional:
   "model": "gpt-4o",
   "thinking": true,
   "thinking_effort": "medium",
-  "auto_edit": false
+  "thinking_detail": false,
+  "auto_edit": false,
+  "context_window": 200000
 }
 ```
+
+- `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
+  window and collapses to "thought about it" when done. When `true`, the full
+  thinking text is expanded. Toggle at runtime with `Ctrl-O` or `/config thinking-detail`.
+- `context_window`: the token budget for the conversation. When usage approaches
+  this limit, use `/compact` to summarize and free space.
 
 ### Session config
 
@@ -64,7 +103,10 @@ Use `/config` inside the agent to view or toggle per-session settings:
 - `/config` — show current settings and their sources
 - `/config thinking` — toggle thinking on/off for this session
 - `/config thinking-effort low|medium|high` — set reasoning effort
+- `/config thinking-detail` — toggle collapsed/expanded thinking display
 - `/config auto-edit` — toggle auto-approve for write/edit
+- `/config model <id>` — switch models mid-session
+- `/config context-window <tokens>` — change the context window
 
 The `-url` value is the API base (must include `/v1`); the client appends
 `/chat/completions`. Point it at any OpenAI-compatible gateway:
@@ -75,36 +117,37 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
 
 ## How it works
 
-1. Read input from stdin (supporting `\` line continuation for multi-line
-   input), append it to the conversation as a user message.
+1. Read input from the TUI textarea. If it starts with `/`, handle as a slash
+   command; otherwise treat as a user message appended to the conversation.
 2. POST the history + tool schemas to `/chat/completions` with streaming.
-3. Print the assistant text as it arrives; for each `tool_calls` entry, run the
-   tool and feed a `role: "tool"` message back.
-4. State-changing tools (`bash` with destructive commands, `write`, `edit`)
-   prompt for user approval before executing.
-5. Repeat until the model returns a message with no tool calls.
+3. Stream the assistant text as it arrives, rendering markdown in the viewport.
+   Reasoning/thinking content streams in dim italic alongside the response.
+4. For each `tool_calls` entry, display the tool name and details. State-changing
+   tools (`bash` with destructive commands, `write`, `edit`) prompt for approval
+   (showing a unified diff for write/edit). Read-only tools run immediately.
+5. Feed each tool result back as a `role: "tool"` message.
+6. Repeat until the model returns a message with no tool calls.
+7. The session auto-saves to `.ma-sessions/<name>.json` after each turn.
 
 The system prompt is built dynamically at startup, injecting the current working
 directory, git branch, and the contents of `AGENTS.md` (if present) — so the
 agent always knows what project it's working in.
 
-Global settings live in `~/.ma/settings.json`. The file is watched via fsnotify:
-edit it and changes take effect immediately without restarting the agent.
+## Keyboard shortcuts
 
-The conversation is kept in memory (`agent.history`), so context carries across
-turns for the life of the process.
+| Key | Action |
+|---|---|
+| `Enter` | Submit message |
+| `Tab` | Trigger autocomplete (slash commands only) |
+| `Ctrl-C` | Cancel current agent turn (or quit when idle) |
+| `Ctrl-O` | Toggle expanded/collapsed thinking display |
+| `↑↓` / `PgUp` / `PgDn` | Scroll viewport |
 
-## Roadmap
+## Directory layout
 
-Tracked in [TODO.md](TODO.md). Current status:
-
-| # | Feature | Status |
-|---|---------|--------|
-| 1 | Editing experience — diff before edit + undo | Diff display ✓, undo ✗ |
-| 2 | UI improvement — syntax highlighting, spinner | ✗ |
-| 3 | Session history — save/reload conversations | ✓ |
-| 4 | External tools — user-defined scripts / web APIs | ✗ |
-| 5 | Skills — reusable prompt templates | ✗ |
-| 6 | Configuration file — `~/.ma/settings.json` | ✓ |
-| 7 | Auto-approve mode — `-y` flag | ✗ |
-| 8 | Context awareness — `.gitignore` + project detection | ✗ |
+```
+.ma-sessions/        — session JSON files (auto-created)
+~/.ma/settings.json  — global config (optional, hot-reloaded)
+go.mod / go.sum      — Go module dependencies
+*.go                 — single package main (no sub-packages)
+```

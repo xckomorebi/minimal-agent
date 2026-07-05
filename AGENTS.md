@@ -12,20 +12,19 @@ this way unless there is a compelling reason.
 | File | Responsibility |
 |---|---|
 | `main.go` | Entry point, CLI flags, tool definitions, system prompt, helper utils |
-| `agent.go` | Agent struct, `runTurn` streaming loop, reasoning extraction |
-| `commands.go` | `/save`, `/resume`, `/new-session`, `/list-session`, `/config`, `/context` |
+| `agent.go` | Agent struct, streaming loop, reasoning extraction, token tracking, summary gen, compaction |
+| `commands.go` | Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config`, `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/help`, plus autocomplete |
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
-| `session.go` | Session load/save/list, auto-resume, `printHistory` |
-| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, `externalTools` placeholder, implementations (bash, read, write, edit, web-search, web-fetch) |
-| `ui.go` | ANSI helpers, banner, diff printing |
-| `tui.go` | Bubble Tea TUI model, viewport, streaming display |
-| `styles.go` | Lipgloss styles, markdown rendering, diff rendering |
+| `session.go` | Session load/save/list, auto-resume, summary/token-usage persistence |
+| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, implementations (bash, read, write, edit, web-search, web-fetch) |
+| `tui.go` | Bubble Tea TUI model, viewport, streaming display, approval, picker, autocomplete |
+| `styles.go` | Lipgloss styles, markdown rendering, unified diff rendering, banner |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
 - **Agent loop**: read user input → append to history → stream response →
   execute tool calls → repeat
-- **Tools**: `bash`, `read`, `write`, `edit` — defined in `main()`, implemented in `tools.go`
+- **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch` — defined in `main()`, implemented in `tools.go`
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
@@ -36,8 +35,8 @@ this way unless there is a compelling reason.
 - Use `edit` over `write` when modifying existing files; `write` only for new files
 - Tool call results always go through `openai.ToolMessage(result, call.ID)`
 - State-changing operations (`write`, `edit`, destructive `bash`) require approval
-- Print user-facing output with ANSI-styled prefixes (`you>`/`agent>`/tool dots)
-- Reasoning blocks are printed in dim italic — extract them from raw SSE JSON
+- All rendering goes through the Bubble Tea TUI (`tui.go` + `styles.go`); no direct stdout printing
+- Reasoning blocks stream in dim italic (rolling 10-line window by default); expand with Ctrl-O or `/config thinking-detail`
 - System prompt is built dynamically in `buildSystemMessage()` — inject cwd,
   git branch, and this file's contents
 
@@ -81,8 +80,9 @@ package and place them in `main_test.go`.
 
 ## Design principles
 
-- **Minimal**: one binary, no frameworks, minimal dependencies (openai-go SDK + fsnotify)
+- **Minimal**: one binary, no frameworks, minimal dependencies (openai-go SDK + Bubble Tea + glamour + fsnotify)
 - **Dogfooding**: the agent writes its own code — all commits after the first
   were authored by the agent itself
 - **Streaming-first**: responses stream over SSE; the accumulator pattern gathers
   chunks and converts to a final message for history
+- **TUI**: full-screen terminal UI with viewport scrolling, markdown rendering, approval prompts, interactive session picker, and slash-command autocomplete
