@@ -17,7 +17,7 @@ this way unless there is a compelling reason.
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
 | `session.go` | Session load/save/list, auto-resume, `printHistory` |
-| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, `externalTools` placeholder, implementations |
+| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, `externalTools` placeholder, implementations (bash, read, write, edit, web-search, web-fetch) |
 | `ui.go` | ANSI helpers, banner, diff printing |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)

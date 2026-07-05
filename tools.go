@@ -3,9 +3,14 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 )
@@ -61,6 +66,13 @@ func builtinTools() []openai.ChatCompletionToolParam {
 			prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
 			prop("new_string", "string", "the replacement text"),
 		),
+		toolDef("web-search", "Search the web using DuckDuckGo and return the top results as formatted text (title, URL, snippet). Use this to look up current information, documentation, or answers to questions.",
+			prop("query", "string", "the search query"),
+			prop("num", "integer", "number of results to return (default 5, max 10)"),
+		),
+		toolDef("web-fetch", "Fetch the content of a URL and return it as readable text. Strips HTML down to plain text. Use this to read documentation, blog posts, or any page found via web-search. Returns up to 50KB of text.",
+			prop("url", "string", "the URL to fetch"),
+		),
 	}
 }
 
@@ -91,6 +103,10 @@ func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) (openai.ChatC
 		return a.writeFile(call)
 	case "edit":
 		return a.editFile(call)
+	case "web-search":
+		return a.webSearch(call), false
+	case "web-fetch":
+		return a.webFetch(call), false
 	default:
 		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
 	}
@@ -208,6 +224,222 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.Chat
 		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
 	return openai.ToolMessage("edited "+args.Path, call.ID), false
+}
+
+// ddgSearchRate limits how fast we hit DuckDuckGo.
+var ddgSearchRate = time.NewTicker(800 * time.Millisecond)
+
+func (a *agent) webSearch(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	var args struct {
+		Query string `json:"query"`
+		Num   int    `json:"num,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Query == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"query": "..."}`, call.ID)
+	}
+	if args.Num <= 0 {
+		args.Num = 5
+	}
+	if args.Num > 10 {
+		args.Num = 10
+	}
+
+	fmt.Println("\n  " + toolDot() + toolLabel("web-search") + " " + args.Query)
+
+	// Rate-limit to avoid triggering bot detection.
+	<-ddgSearchRate.C
+
+	form := url.Values{"q": {args.Query}}
+	req, err := http.NewRequest("POST", "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("User-Agent", "Lynx/2.9.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	htmlBody := string(body)
+
+	// Parse result links: class="result__a" href="..." > title <
+	linkRe := regexp.MustCompile(`class="result__a"[^>]*href="([^"]*)"[^>]*>([^<]*)<`)
+	// Parse result snippets: class="result__snippet" > ... <
+	snippetRe := regexp.MustCompile(`class="result__snippet"[^>]*>(.*?)</`)
+
+	linkMatches := linkRe.FindAllStringSubmatch(htmlBody, -1)
+	snippetMatches := snippetRe.FindAllStringSubmatch(htmlBody, -1)
+
+	count := args.Num
+	if count > len(linkMatches) {
+		count = len(linkMatches)
+	}
+	if count == 0 {
+		return openai.ToolMessage("no results found for: "+args.Query, call.ID)
+	}
+
+	var results []string
+	for i := 0; i < count; i++ {
+		href := linkMatches[i][1]
+		title := linkMatches[i][2]
+
+		// Decode the DuckDuckGo redirect URL.
+		realURL := decodeDDGRedirect(href)
+
+		snippet := ""
+		if i < len(snippetMatches) {
+			snippet = cleanHTML(snippetMatches[i][1])
+		}
+
+		var b strings.Builder
+		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(title)))
+		b.WriteString(fmt.Sprintf("   %s\n", realURL))
+		if snippet != "" {
+			b.WriteString(fmt.Sprintf("   %s\n", snippet))
+		}
+		results = append(results, b.String())
+	}
+	return openai.ToolMessage(strings.Join(results, "\n"), call.ID)
+}
+
+func (a *agent) webFetch(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	var args struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.URL == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"url": "..."}`, call.ID)
+	}
+
+	fmt.Println("\n  " + toolDot() + toolLabel("web-fetch") + " " + args.URL)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	req, err := http.NewRequest("GET", args.URL, nil)
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	req.Header.Set("User-Agent", "Lynx/2.9.0")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	defer resp.Body.Close()
+
+	// Reject non-text content types.
+	ct := resp.Header.Get("Content-Type")
+	if ct != "" {
+		mt := strings.SplitN(ct, ";", 2)[0]
+		switch mt {
+		case "text/html", "text/plain", "application/xhtml+xml", "application/xml", "text/xml":
+		default:
+			return openai.ToolMessage(fmt.Sprintf("error: unsupported content type %s — only text/* and */html are supported", mt), call.ID)
+		}
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024)) // 2MB max
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+
+	text := htmlToText(string(body))
+	limit := 50 * 1024
+	if len(text) > limit {
+		text = text[:limit] + fmt.Sprintf("\n\n... truncated at %d bytes (full page was %d bytes)", limit, len(text))
+	}
+	if text == "" {
+		return openai.ToolMessage("(empty page — no readable text content)", call.ID)
+	}
+	return openai.ToolMessage(text, call.ID)
+}
+
+// htmlToText strips HTML down to readable plain text.
+func htmlToText(html string) string {
+	// Remove scripts and styles.
+	s := regexp.MustCompile(`(?is)<script[^>]*>.*?</script>`).ReplaceAllString(html, "")
+	s = regexp.MustCompile(`(?is)<style[^>]*>.*?</style>`).ReplaceAllString(s, "")
+
+	// Replace <br> and block-level tags with newlines.
+	s = regexp.MustCompile(`(?i)<br\s*/?>`).ReplaceAllString(s, "\n")
+	s = regexp.MustCompile(`(?i)</?(p|div|h[1-6]|li|tr|article|section|header|footer|nav|main|aside|table|thead|tbody|tfoot|dl|dt|dd|pre|blockquote|hr|figure|figcaption)[^>]*>`).ReplaceAllString(s, "\n")
+
+	// Remove all remaining tags.
+	s = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
+
+	// Decode entities.
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&quot;", "\"")
+	s = strings.ReplaceAll(s, "&#x27;", "'")
+	s = strings.ReplaceAll(s, "&#39;", "'")
+	s = strings.ReplaceAll(s, "&nbsp;", " ")
+
+	// Collapse repeated whitespace and blank lines.
+	lines := strings.Split(s, "\n")
+	var out []string
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			if len(out) > 0 && out[len(out)-1] != "" {
+				out = append(out, "")
+			}
+			continue
+		}
+		// Collapse multiple spaces.
+		line = regexp.MustCompile(`\s+`).ReplaceAllString(line, " ")
+		out = append(out, line)
+	}
+	// Trim trailing blank lines.
+	for len(out) > 0 && out[len(out)-1] == "" {
+		out = out[:len(out)-1]
+	}
+	return strings.Join(out, "\n")
+}
+
+// decodeDDGRedirect extracts the real URL from DuckDuckGo's redirect wrapper.
+// DDG wraps result links as //duckduckgo.com/l/?uddg=ENCODED_URL&rut=...
+func decodeDDGRedirect(href string) string {
+	u, err := url.Parse(href)
+	if err != nil {
+		return href
+	}
+	// Handle protocol-relative URLs.
+	if u.Scheme == "" && strings.HasPrefix(href, "//") {
+		u, err = url.Parse("https:" + href)
+		if err != nil {
+			return href
+		}
+	}
+	encoded := u.Query().Get("uddg")
+	if encoded == "" {
+		return href
+	}
+	decoded, err := url.QueryUnescape(encoded)
+	if err != nil {
+		return encoded
+	}
+	return decoded
+}
+
+// cleanHTML strips HTML tags and decodes common entities from snippet text.
+func cleanHTML(s string) string {
+	s = regexp.MustCompile(`<[^>]*>`).ReplaceAllString(s, "")
+	s = strings.ReplaceAll(s, "&amp;", "&")
+	s = strings.ReplaceAll(s, "&lt;", "<")
+	s = strings.ReplaceAll(s, "&gt;", ">")
+	s = strings.ReplaceAll(s, "&quot;", "\"")
+	s = strings.ReplaceAll(s, "&#x27;", "'")
+	s = strings.ReplaceAll(s, "&#39;", "'")
+	return strings.TrimSpace(s)
 }
 
 func printDiff(content, oldString, newString string) {
