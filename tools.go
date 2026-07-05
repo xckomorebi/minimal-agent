@@ -133,27 +133,83 @@ func printDiff(content, oldString, newString string) {
 	oldLines := split(oldString)
 	newLines := split(newString)
 
+	// 1-indexed line where old_string starts in the file.
+	matchLine := len(beforeLines) + 1
+
+	// Find common prefix: lines shared at the start of old and new.
+	commonPrefix := 0
+	for commonPrefix < len(oldLines) && commonPrefix < len(newLines) &&
+		oldLines[commonPrefix] == newLines[commonPrefix] {
+		commonPrefix++
+	}
+
+	// Find common suffix (after the prefix).
+	commonSuffix := 0
+	oi := len(oldLines) - 1
+	ni := len(newLines) - 1
+	for commonSuffix < len(oldLines)-commonPrefix && commonSuffix < len(newLines)-commonPrefix &&
+		oldLines[oi] == newLines[ni] {
+		commonSuffix++
+		oi--
+		ni--
+	}
+
 	ctxBefore := min(3, len(beforeLines))
 	ctxAfter := min(3, len(afterLines))
 
-	oldStart := len(beforeLines) - ctxBefore + 1
+	// Unified diff header.
 	oldCount := ctxBefore + len(oldLines) + ctxAfter
-	newStart := oldStart
 	newCount := ctxBefore + len(newLines) + ctxAfter
+	fmt.Printf("@@ -%d,%d +%d,%d @@\n", matchLine-ctxBefore, oldCount, matchLine-ctxBefore, newCount)
 
-	fmt.Printf("@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+	pad := func(ln int, marker, line string) {
+		switch marker {
+		case " ":
+			fmt.Printf("%4d  %s\n", ln, line)
+		case "-":
+			fmt.Printf("%4d  \033[31m-%s\033[0m\n", ln, line)
+		default:
+			fmt.Printf("      \033[32m+%s\033[0m\n", line)
+		}
+	}
 
+	// Context before.
+	ln := matchLine - ctxBefore
 	for _, line := range beforeLines[len(beforeLines)-ctxBefore:] {
-		fmt.Println("  " + line)
+		pad(ln, " ", line)
+		ln++
 	}
-	for _, line := range oldLines {
-		fmt.Println("  \033[31m-" + line + "\033[0m")
+
+	// Common prefix (unchanged context embedded in old/new).
+	for i := 0; i < commonPrefix; i++ {
+		pad(ln, " ", oldLines[i])
+		ln++
 	}
-	for _, line := range newLines {
-		fmt.Println("  \033[32m+" + line + "\033[0m")
+
+	// Removed old lines.
+	oldChgEnd := ln
+	for i := commonPrefix; i < len(oldLines)-commonSuffix; i++ {
+		pad(ln, "-", oldLines[i])
+		ln++
+		oldChgEnd = ln
 	}
-	for _, line := range afterLines[:ctxAfter] {
-		fmt.Println("  " + line)
+
+	// Added new lines (no line numbers — they don't exist in the old file).
+	for i := commonPrefix; i < len(newLines)-commonSuffix; i++ {
+		pad(0, "+", newLines[i])
+	}
+
+	// Common suffix (unchanged context embedded in old/new).
+	ln = oldChgEnd
+	for i := len(oldLines) - commonSuffix; i < len(oldLines); i++ {
+		pad(ln, " ", oldLines[i])
+		ln++
+	}
+
+	// Context after.
+	for i := 0; i < ctxAfter && i < len(afterLines); i++ {
+		pad(ln, " ", afterLines[i])
+		ln++
 	}
 }
 

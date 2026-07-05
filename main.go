@@ -208,6 +208,17 @@ func main() {
 			continue
 		}
 
+		// If line ends with backslash, read continuation lines.
+		for strings.HasSuffix(line, "\\") {
+			line = strings.TrimSuffix(line, "\\")
+			fmt.Print(dim("  ... "))
+			if !scanner.Scan() {
+				break
+			}
+			next := strings.TrimSpace(scanner.Text())
+			line += "\n" + next
+		}
+
 		if strings.HasPrefix(line, "/") {
 			a.handleCommand(strings.TrimPrefix(line, "/"))
 			continue
