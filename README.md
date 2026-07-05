@@ -55,3 +55,7 @@ agent always knows what project it's working in.
 
 The conversation is kept in memory (`agent.history`), so context carries across
 turns for the life of the process.
+
+## Roadmap
+
+See [TODO.md](TODO.md) for planned features.
