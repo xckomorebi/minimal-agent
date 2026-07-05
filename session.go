@@ -22,13 +22,15 @@ type sessionConfig struct {
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
+	ContextWindow  *int64  `json:"context_window,omitempty"`
 }
 
 // sessionFile is the top-level JSON structure stored in a session file.
 type sessionFile struct {
-	Config  sessionConfig                            `json:"config"`
-	History []openai.ChatCompletionMessageParamUnion `json:"history"`
-	Summary string                                  `json:"summary,omitempty"`
+	Config     sessionConfig                            `json:"config"`
+	History    []openai.ChatCompletionMessageParamUnion `json:"history"`
+	Summary    string                                   `json:"summary,omitempty"`
+	TokenUsage tokenUsage                               `json:"token_usage,omitempty"`
 }
 
 // sessionPath returns the file path for a given session name.
@@ -42,9 +44,10 @@ func (a *agent) saveSession() error {
 		return err
 	}
 	sf := sessionFile{
-		Config:  a.config,
-		History: a.history,
-		Summary: a.summary,
+		Config:     a.config,
+		History:    a.history,
+		Summary:    a.summary,
+		TokenUsage: a.tokenUsage,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -77,6 +80,7 @@ func (a *agent) loadSession(name string) error {
 		a.sessionName = name
 		a.sessionDirty = false
 		a.summary = sf.Summary
+		a.tokenUsage = sf.TokenUsage
 		if a.summary != "" {
 			a.summaryGenerated = true
 		}

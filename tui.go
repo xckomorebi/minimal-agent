@@ -33,6 +33,9 @@ type approvalReqMsg struct {
 }
 type turnDoneMsg struct{}
 type turnErrMsg struct{ error }
+type compactDoneMsg struct {
+	result string // compact result to display
+}
 
 type tickMsg time.Time
 
@@ -523,6 +526,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, nil
 				}
 				m.renderCommand(line)
+				if parts[0] == "compact" {
+					return m, waitForMsg(m.msgCh)
+				}
 				return m, nil
 			}
 
@@ -646,6 +652,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Save now so the user message (and any partial assistant+tools
 		// already appended before cancel) is persisted.
+		m.agent.sessionDirty = true
+		m.agent.autoSave()
+		m.updateViewportContent()
+		return m, nil
+
+	case compactDoneMsg:
+		m.flushStreaming()
+		m.agentRunning = false
+		m.commandInterleaves = nil
+		m.bannerSeed = bannerLines(m.agent)
+		m.rebuildOutput()
+		m.push(roleCommand, dimStyle.Render("  "+msg.result))
 		m.agent.sessionDirty = true
 		m.agent.autoSave()
 		m.updateViewportContent()
@@ -1009,6 +1027,9 @@ func (m *tuiModel) renderCommand(line string) {
 		m.commandInterleaves = nil
 		m.bannerSeed = bannerLines(m.agent)
 		m.rebuildOutput()
+	case "compact":
+		m.commandInterleaves = nil
+		m.agentRunning = true
 	case "config":
 		if strings.HasPrefix(cmd, "config thinking-detail") {
 			m.rebuildOutput()

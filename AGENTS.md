@@ -13,7 +13,7 @@ this way unless there is a compelling reason.
 |---|---|
 | `main.go` | Entry point, CLI flags, tool definitions, system prompt, helper utils |
 | `agent.go` | Agent struct, `runTurn` streaming loop, reasoning extraction |
-| `commands.go` | `/save`, `/resume`, `/new-session`, `/list-session`, `/config` |
+| `commands.go` | `/save`, `/resume`, `/new-session`, `/list-session`, `/config`, `/context` |
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
 | `session.go` | Session load/save/list, auto-resume, `printHistory` |
@@ -29,7 +29,7 @@ this way unless there is a compelling reason.
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
-  API key, base URL, model, thinking, effort level, thinking detail, auto-edit
+  API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window
 
 ## Coding conventions
 
@@ -50,10 +50,10 @@ MA_API_KEY=sk-... ./minimal-agent
 
 ## Configuration priority (highest to lowest)
 
-1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-session`, `-new`)
+1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-session`, `-new`, `-context-window`)
 2. Session config (`/config` commands, stored in `.ma-sessions/<name>.json`)
 3. Global config file (`~/.ma/settings.json`, JSON, watched via fsnotify)
-4. Environment variables (`MA_API_KEY`, `MA_BASE_URL`, `MA_MODEL`)
+4. Environment variables (`MA_API_KEY`, `MA_BASE_URL`, `MA_MODEL`, `MA_CONTEXT_WINDOW`)
 
 Settings configurable via `~/.ma/settings.json`:
 
@@ -65,7 +65,8 @@ Settings configurable via `~/.ma/settings.json`:
   "thinking": true,
   "thinking_effort": "medium",
   "thinking_detail": false,
-  "auto_edit": false
+  "auto_edit": false,
+  "context_window": 200000
 }
 ```
 

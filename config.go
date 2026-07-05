@@ -23,6 +23,7 @@ type globalConfig struct {
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
 	AutoEdit       *bool   `json:"auto_edit,omitempty"`
+	ContextWindow  *int64  `json:"context_window,omitempty"`
 }
 
 var (

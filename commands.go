@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,8 +57,20 @@ func init() {
 		"config": {
 			name:        "config",
 			description: "show or change configuration",
-			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail.",
+			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail, context-window.",
 			handler:     cmdConfig,
+		},
+		"context": {
+			name:        "context",
+			description: "show current token usage",
+			detail:      "context — show current prompt, completion, and total tokens for the conversation, plus the configured context window size and percentage used.",
+			handler:     cmdContext,
+		},
+		"compact": {
+			name:        "compact",
+			description: "summarize conversation to free context",
+			detail:      "compact — ask the LLM to summarize the conversation so far and replace the history with the summary, freeing up context window space. The system prompt and tool definitions are preserved.",
+			handler:     cmdCompact,
 		},
 		"model": {
 			name:        "model",
@@ -145,6 +158,7 @@ func cmdNewSession(a *agent, parts []string) string {
 	a.summaryGenerated = false
 	a.reasonings = nil
 	a.fileMtimes = nil
+	a.tokenUsage = tokenUsage{}
 	return fmt.Sprintf("new session %q", name)
 }
 
@@ -213,6 +227,50 @@ func cmdEffort(a *agent, parts []string) string {
 	return a.handleConfigStr(args)
 }
 
+// cmdContext shows current token usage for the session.
+func cmdContext(a *agent, parts []string) string {
+	cw := a.contextWindow()
+	tu := a.tokenUsage
+	if tu.Total == 0 {
+		return fmt.Sprintf("no token usage data yet (context window: %s)", formatTokens(cw))
+	}
+	pct := float64(tu.Total) / float64(cw) * 100
+	return fmt.Sprintf("token usage (current):\n  prompt       %s\n  completion   %s\n  total        %s\n  context win  %s\n  used         %.1f%%",
+		formatTokens(tu.Prompt),
+		formatTokens(tu.Completion),
+		formatTokens(tu.Total),
+		formatTokens(cw),
+		pct)
+}
+
+// cmdCompact kicks off an asynchronous conversation compaction. It returns a
+// status string immediately and runs the summarization in a goroutine.
+func cmdCompact(a *agent, parts []string) string {
+	// Must have at least a system message and one user message to compact.
+	if len(a.history) < 3 {
+		return "nothing to compact (need at least one user message)"
+	}
+	go a.compactHistory()
+	return "compacting..."
+}
+func formatTokens(n int64) string {
+	if n < 1000 {
+		return strconv.FormatInt(n, 10)
+	}
+	s := strconv.FormatInt(n, 10)
+	var b strings.Builder
+	rem := len(s) % 3
+	if rem == 0 {
+		rem = 3
+	}
+	b.WriteString(s[:rem])
+	for i := rem; i < len(s); i += 3 {
+		b.WriteByte(',')
+		b.WriteString(s[i : i+3])
+	}
+	return b.String()
+}
+
 // cmdHelp shows all commands (with descriptions) or detailed help for one.
 func cmdHelp(a *agent, parts []string) string {
 	if len(parts) > 1 {
@@ -275,8 +333,9 @@ func (a *agent) handleConfigStr(args []string) string {
 		think := onOff(a.thinking())
 		effort := effortString(a.thinkingEffort())
 		detail := onOff(a.thinkingDetail())
-		return fmt.Sprintf("model     : %s %s\nauto-edit : %s\nthinking  : %s\neffort    : %s\ndetail    : %s",
-			model, src, auto, think, effort, detail)
+		cw := a.contextWindow()
+		return fmt.Sprintf("model         : %s %s\nauto-edit     : %s\nthinking      : %s\neffort        : %s\ndetail        : %s\ncontext-window: %s",
+			model, src, auto, think, effort, detail, formatTokens(cw))
 	}
 	switch args[0] {
 	case "model":
@@ -313,8 +372,19 @@ func (a *agent) handleConfigStr(args []string) string {
 		a.config.ThinkingDetail = &v
 		a.sessionDirty = true
 		return "thinking-detail: " + onOff(v)
+	case "context-window":
+		if len(args) < 2 {
+			return "usage: /config context-window <tokens>"
+		}
+		n, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || n <= 0 {
+			return "invalid token count: " + args[1]
+		}
+		a.config.ContextWindow = &n
+		a.sessionDirty = true
+		return "context-window: " + formatTokens(n)
 	default:
-		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail"
+		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail, context-window"
 	}
 }
 
@@ -464,7 +534,7 @@ func commandNames() []string {
 func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 	if len(args) == 0 {
 		if trailingSpace {
-			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model"}
+			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model", "context-window"}
 		}
 		return nil // shouldn't happen: empty args without trailing space
 	}
@@ -479,7 +549,7 @@ func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 
 	// If there are no value args and no trailing space, suggest subcommand names.
 	if len(valueArgs) == 0 && !trailingSpace {
-		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model"})
+		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model", "context-window"})
 	}
 
 	// If there's one value arg and no trailing space, filter existing value completions.
@@ -505,6 +575,8 @@ func autocompleteConfigValue(subName, prefix string) []string {
 		}
 		return filterPrefix(prefix, []string{"low", "medium", "high"})
 	case "model":
+		return nil
+	case "context-window":
 		return nil
 	default:
 		return nil

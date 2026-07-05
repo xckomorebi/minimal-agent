@@ -90,6 +90,7 @@ func main() {
 	modelFlag := flag.String("model", "", "model id")
 	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
 	newFlag := flag.Bool("new", false, "start a new session instead of auto-resuming")
+	contextWindowFlag := flag.Int64("context-window", 0, "context window size in tokens (default 200000)")
 	flag.Parse()
 
 	globalMu.Lock()
@@ -119,8 +120,9 @@ func main() {
 			option.WithAPIKey(apiKey),
 			option.WithBaseURL(url),
 		),
-		flagModel:   *modelFlag,
-		sessionName: resolveSession(*sessionFlag),
+		flagModel:         *modelFlag,
+		flagContextWindow: *contextWindowFlag,
+		sessionName:       resolveSession(*sessionFlag),
 		tools:       allTools(),
 		history: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(buildSystemMessage()),

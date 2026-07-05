@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -16,13 +17,19 @@ import (
 
 type agent struct {
 	client       openai.Client
-	flagModel    string
-	tools        []openai.ChatCompletionToolParam
+	flagModel         string
+	flagContextWindow int64 // 0 means unset
+	tools             []openai.ChatCompletionToolParam
 	history      []openai.ChatCompletionMessageParamUnion
 	config       sessionConfig
 	sessionName  string
 	sessionDirty bool
 	msgCh        chan tea.Msg // channel to send events to the TUI
+
+	// tokenUsage tracks the token count for the current conversation state.
+	// It is set (not accumulated) after each turn so it reflects the last
+	// request's usage. Persisted in the session JSON.
+	tokenUsage tokenUsage
 
 	// reasonings stores the full reasoning text for each assistant message in
 	// history, keyed by the message's index in the history slice. Reasoning is
@@ -42,6 +49,13 @@ type agent struct {
 	summary string
 	// summaryGenerated prevents duplicate async summary generation.
 	summaryGenerated bool
+}
+
+// tokenUsage tracks token counts for the current conversation state.
+type tokenUsage struct {
+	Prompt     int64 `json:"prompt"`
+	Completion int64 `json:"completion"`
+	Total      int64 `json:"total"`
 }
 
 // rememberFile records the file's current on-disk mtime as the version this
@@ -97,6 +111,24 @@ func (a *agent) effectiveModel() string {
 		return m
 	}
 	return "gpt-4o"
+}
+
+func (a *agent) contextWindow() int64 {
+	if a.flagContextWindow > 0 {
+		return a.flagContextWindow
+	}
+	if a.config.ContextWindow != nil && *a.config.ContextWindow > 0 {
+		return *a.config.ContextWindow
+	}
+	if c := readGlobalCfg(); c != nil && c.ContextWindow != nil && *c.ContextWindow > 0 {
+		return *c.ContextWindow
+	}
+	if s := os.Getenv("MA_CONTEXT_WINDOW"); s != "" {
+		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
+			return n
+		}
+	}
+	return 200000
 }
 
 func (a *agent) autoEdit() bool {
@@ -251,6 +283,12 @@ func (a *agent) doTurn(ctx context.Context) {
 			a.sendCritical(turnErrMsg{err})
 			return
 		}
+
+		// Set token usage to reflect current conversation state.
+		u := acc.Usage
+		a.tokenUsage.Prompt = u.PromptTokens
+		a.tokenUsage.Completion = u.CompletionTokens
+		a.tokenUsage.Total = u.TotalTokens
 		if len(acc.Choices) == 0 {
 			a.sendCritical(turnErrMsg{fmt.Errorf("empty response (no choices)")})
 			return
@@ -537,4 +575,95 @@ func (a *agent) generateSessionSummary(userText string) {
 	a.summary = summary
 	a.sessionDirty = true
 	a.autoSave()
+}
+
+// compactHistory sends the full conversation history to the LLM and asks it to
+// produce a detailed summary. It then replaces the history with: system
+// message + summary-as-user + assistant acknowledgment. Runs in a goroutine
+// and communicates results back to the TUI via the msgCh.
+func (a *agent) compactHistory() {
+	// Save the system message (always the first message).
+	sysMsg := a.history[0]
+
+	// Build a summarization request from the current history.
+	var b strings.Builder
+	for _, msg := range a.history[1:] {
+		if msg.OfUser != nil {
+			b.WriteString("User: ")
+			b.WriteString(msg.OfUser.Content.OfString.Value)
+			b.WriteString("\n")
+		}
+		if msg.OfAssistant != nil {
+			if text := msg.OfAssistant.Content.OfString.Value; text != "" {
+				b.WriteString("Assistant: ")
+				b.WriteString(text)
+				b.WriteString("\n")
+			}
+			for _, tc := range msg.OfAssistant.ToolCalls {
+				b.WriteString(fmt.Sprintf("Assistant: tool call %s(%s)\n", tc.Function.Name, tc.Function.Arguments))
+			}
+		}
+		if msg.OfTool != nil {
+			result := msg.OfTool.Content.OfString.Value
+			if len(result) > 500 {
+				result = result[:500] + "..."
+			}
+			b.WriteString(fmt.Sprintf("Tool result: %s\n", result))
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	params := openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(a.effectiveModel()),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("You are a conversation summarizer. Your task is to produce a detailed but concise summary of the conversation below. Include: the user's requests, the agent's approach, key decisions made, files examined or modified, and any important context that would help a coding agent pick up where it left off. Write in prose, as a narrative summary. Be thorough about technical details: include file names, function names, code snippets where relevant, and the reasoning behind changes. Do not use bullet points — write continuous paragraphs."),
+			openai.UserMessage("Summarize this conversation:\n\n" + b.String()),
+		},
+		MaxTokens: openai.Int(4096),
+	}
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]any{"type": "disabled"},
+	})
+
+	completion, err := a.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		a.sendCritical(turnErrMsg{fmt.Errorf("compact failed: %w", err)})
+		return
+	}
+	if len(completion.Choices) == 0 {
+		a.sendCritical(turnErrMsg{fmt.Errorf("compact: empty response")})
+		return
+	}
+
+	summary := strings.TrimSpace(completion.Choices[0].Message.Content)
+	if summary == "" {
+		a.sendCritical(turnErrMsg{fmt.Errorf("compact: empty summary")})
+		return
+	}
+
+	// After compaction, the new conversation consists of the system prompt
+	// plus the summary (which was the compact call's completion). So the
+	// prompt token count is: system prompt (estimated as len/4) + compact completion tokens.
+	// Completion resets to 0.
+	u := completion.Usage
+	sysTokens := int64(len(sysMsg.OfSystem.Content.OfString.Value) / 4)
+	a.tokenUsage.Prompt = sysTokens + u.CompletionTokens
+	a.tokenUsage.Completion = 0
+	a.tokenUsage.Total = sysTokens + u.CompletionTokens
+
+	// Replace history.
+	oldCount := len(a.history)
+	a.history = []openai.ChatCompletionMessageParamUnion{
+		sysMsg,
+		openai.UserMessage("Here is a summary of the conversation so far:\n\n" + summary + "\n\nContinue helping the user based on this summary. Remember the context, decisions, and any files discussed."),
+	}
+	a.reasonings = nil // reasoning is tied to old message indices
+	a.sessionDirty = true
+
+	newCount := len(a.history)
+	result := fmt.Sprintf("compacted %d messages → %d messages", oldCount, newCount)
+
+	a.sendCritical(compactDoneMsg{result: result})
 }
