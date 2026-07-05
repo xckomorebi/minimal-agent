@@ -24,16 +24,40 @@ Type a request at the `you>` prompt. `Ctrl-D`, `exit`, or `quit` to leave.
 
 ## Configuration
 
-Flags override environment variables.
+Priority (highest to lowest): **CLI flags > session config > `~/.ma/settings.json` > environment variables**.
 
-| What     | Env           | Flag           | Default                     |
-| -------- | ------------- | -------------- | --------------------------- |
-| API key  | `MA_API_KEY`  | `-ma-api-key`  | (required)                  |
-| Base URL | `MA_BASE_URL` | `-url`         | `https://api.openai.com/v1` |
-| Model    | `MA_MODEL`    | `-model`       | `gpt-4o`                    |
+### CLI flags
 
-Thinking mode is always on with effort `medium`. Reasoning content is rendered
-in dim italic inline with the response.
+| Flag          | Env           | Default                     |
+| ------------- | ------------- | --------------------------- |
+| `-ma-api-key` | `MA_API_KEY`  | (required)                  |
+| `-url`        | `MA_BASE_URL` | `https://api.openai.com/v1` |
+| `-model`      | `MA_MODEL`    | `gpt-4o`                    |
+
+### Global config file (`~/.ma/settings.json`)
+
+A JSON file that is **watched via fsnotify** — edit it and the agent picks up
+new settings immediately. All keys are optional:
+
+```json
+{
+  "api_key": "sk-...",
+  "base_url": "https://api.openai.com/v1",
+  "model": "gpt-4o",
+  "thinking": true,
+  "thinking_effort": "medium",
+  "auto_edit": false
+}
+```
+
+### Session config
+
+Use `/config` inside the agent to view or toggle per-session settings:
+
+- `/config` — show current settings and their sources
+- `/config thinking` — toggle thinking on/off for this session
+- `/config thinking-effort low|medium|high` — set reasoning effort
+- `/config auto-edit` — toggle auto-approve for write/edit
 
 The `-url` value is the API base (must include `/v1`); the client appends
 `/chat/completions`. Point it at any OpenAI-compatible gateway:
@@ -55,6 +79,9 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
 The system prompt is built dynamically at startup, injecting the current working
 directory, git branch, and the contents of `AGENTS.md` (if present) — so the
 agent always knows what project it's working in.
+
+Global settings live in `~/.ma/settings.json`. The file is watched via fsnotify:
+edit it and changes take effect immediately without restarting the agent.
 
 The conversation is kept in memory (`agent.history`), so context carries across
 turns for the life of the process.

@@ -5,11 +5,17 @@
 // approval: `write` and `edit` always prompt, and `bash` prompts when the model
 // sets its `requires_approval` parameter. `read` never prompts.
 //
-// Configuration (flags override environment):
+// Configuration — priority (highest to lowest):
 //
-//	API key : MA_API_KEY  or  -ma-api-key
-//	Base URL: MA_BASE_URL or  -url   (default https://api.openai.com/v1)
-//	Model   : MA_MODEL or -model (default gpt-4o)
+//	CLI flags > session config > ~/.ma/settings.json > environment
+//
+//	API key : -ma-api-key  >  ~/.ma/settings.json  >  MA_API_KEY
+//	Base URL: -url         >  ~/.ma/settings.json  >  MA_BASE_URL  >  https://api.openai.com/v1
+//	Model   : -model       >  ~/.ma/settings.json  >  MA_MODEL     >  gpt-4o
+//	Model, thinking, effort, auto-edit: /config set  >  ~/.ma/settings.json  >  built-in defaults
+//
+// The global config file (~/.ma/settings.json) is watched via fsnotify and
+// reloaded automatically — no restart required.
 //
 // Run:
 //
@@ -29,9 +35,11 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/fsnotify/fsnotify"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
@@ -44,6 +52,7 @@ const sessionDir = ".ma-sessions"
 // sessionConfig holds per-session overrides. Fields use pointers so that
 // unset keys (nil) are omitted from JSON and fall through to global defaults.
 type sessionConfig struct {
+	Model          *string `json:"model,omitempty"`
 	AutoEdit       *bool   `json:"auto_edit,omitempty"`
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
@@ -55,34 +64,167 @@ type sessionFile struct {
 	History []openai.ChatCompletionMessageParamUnion     `json:"history"`
 }
 
+// ---- global config file ----------------------------------------------------
+
+const globalConfigDir = ".ma"
+const globalConfigFile = "settings.json"
+
+// globalConfig holds settings from ~/.ma/settings.json. Fields use pointers
+// so that unset keys (nil) are omitted from JSON and fall through to lower layers.
+type globalConfig struct {
+	APIKey         *string `json:"api_key,omitempty"`
+	BaseURL        *string `json:"base_url,omitempty"`
+	Model          *string `json:"model,omitempty"`
+	Thinking       *bool   `json:"thinking,omitempty"`
+	ThinkingEffort *string `json:"thinking_effort,omitempty"`
+	AutoEdit       *bool   `json:"auto_edit,omitempty"`
+}
+
+// globalCfg is the currently loaded global configuration, protected by mu.
+// Updated automatically via fsnotify when ~/.ma/settings.json changes.
+var (
+	globalCfg *globalConfig
+	globalMu  sync.RWMutex
+)
+
+// readGlobalCfg returns a snapshot of the current global config (nil if none).
+func readGlobalCfg() *globalConfig {
+	globalMu.RLock()
+	defer globalMu.RUnlock()
+	return globalCfg
+}
+
+// globalConfigPath returns the full path to ~/.ma/settings.json.
+func globalConfigPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, globalConfigDir, globalConfigFile), nil
+}
+
+// loadGlobalConfig reads and parses ~/.ma/settings.json. Returns nil if the
+// file does not exist or cannot be parsed.
+func loadGlobalConfig() *globalConfig {
+	path, err := globalConfigPath()
+	if err != nil {
+		return nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var cfg globalConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		return nil
+	}
+	return &cfg
+}
+
+// startConfigWatcher begins watching the config file via fsnotify. It runs in
+// a goroutine and reloads globalCfg whenever the file changes. Returns an error
+// if the watcher cannot be set up.
+func startConfigWatcher() error {
+	path, err := globalConfigPath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+
+	w, err := fsnotify.NewWatcher()
+	if err != nil {
+		return err
+	}
+	// Always watch the directory — editors often save via rename (temp file →
+	// real name), which we catch via directory-level Create/Write events.
+	if err := w.Add(dir); err != nil {
+		w.Close()
+		return err
+	}
+
+	go func() {
+		defer w.Close()
+		for {
+			select {
+			case ev, ok := <-w.Events:
+				if !ok {
+					return
+				}
+				// Only reload when settings.json itself changes (not other
+				// files in ~/.ma).
+				if filepath.Clean(ev.Name) != filepath.Clean(path) {
+					continue
+				}
+				if ev.Has(fsnotify.Remove) || ev.Has(fsnotify.Rename) {
+					// File was deleted — clear config.
+					globalMu.Lock()
+					globalCfg = nil
+					globalMu.Unlock()
+					continue
+				}
+				if ev.Has(fsnotify.Create) || ev.Has(fsnotify.Write) {
+					globalMu.Lock()
+					globalCfg = loadGlobalConfig()
+					globalMu.Unlock()
+				}
+			case err, ok := <-w.Errors:
+				if !ok {
+					return
+				}
+				fmt.Fprintf(os.Stderr, "  %s\n", red("config watcher error: "+err.Error()))
+			}
+		}
+	}()
+	return nil
+}
+
 // ---- effective config ------------------------------------------------------
-// These resolve a session-level override against the global default.
-// Global defaults are hardcoded for now; they will move to a config file later.
+// Priority chain: session (/config) > global (~/.ma/settings.json) > built-in default.
 
 func (a *agent) autoEdit() bool {
 	if a.config.AutoEdit != nil {
 		return *a.config.AutoEdit
 	}
-	return false // global default
+	if c := readGlobalCfg(); c != nil && c.AutoEdit != nil {
+		return *c.AutoEdit
+	}
+	return false
 }
 
 func (a *agent) thinking() bool {
 	if a.config.Thinking != nil {
 		return *a.config.Thinking
 	}
-	return true // global default
+	if c := readGlobalCfg(); c != nil && c.Thinking != nil {
+		return *c.Thinking
+	}
+	return true
 }
 
 func (a *agent) thinkingEffort() shared.ReasoningEffort {
-	if a.config.ThinkingEffort != nil {
-		switch *a.config.ThinkingEffort {
+	resolve := func(s *string) (shared.ReasoningEffort, bool) {
+		if s == nil {
+			return "", false
+		}
+		switch *s {
 		case "low":
-			return shared.ReasoningEffortLow
+			return shared.ReasoningEffortLow, true
 		case "high":
-			return shared.ReasoningEffortHigh
+			return shared.ReasoningEffortHigh, true
+		case "medium":
+			return shared.ReasoningEffortMedium, true
+		}
+		return "", false
+	}
+	if v, ok := resolve(a.config.ThinkingEffort); ok {
+		return v
+	}
+	if c := readGlobalCfg(); c != nil {
+		if v, ok := resolve(c.ThinkingEffort); ok {
+			return v
 		}
 	}
-	return shared.ReasoningEffortMedium // global default
+	return shared.ReasoningEffortMedium
 }
 
 // sessionPath returns the file path for a given session name.
@@ -308,14 +450,36 @@ func (a *agent) handleCommand(cmd string) {
 
 // handleConfig processes /config commands to view or change session settings.
 func (a *agent) handleConfig(args []string) {
+	c := readGlobalCfg()
 	if len(args) == 0 {
-		// Show effective config (session overrides merged with global defaults).
-		fmt.Printf("  auto-edit      : %s\n", onOff(a.autoEdit()))
-		fmt.Printf("  thinking       : %s\n", onOff(a.thinking()))
-		fmt.Printf("  thinking-effort: %s\n", effortString(a.thinkingEffort()))
+		// Show effective config with source.
+		model := a.effectiveModel()
+		modelSrc := dim("(default)")
+		if a.flagModel != "" {
+			modelSrc = dim("(flag)")
+		} else if a.config.Model != nil && *a.config.Model != "" {
+			modelSrc = dim("(session)")
+		} else if c != nil && c.Model != nil && *c.Model != "" {
+			modelSrc = dim("(config file)")
+		} else if os.Getenv("MA_MODEL") != "" {
+			modelSrc = dim("(env)")
+		}
+		fmt.Printf("  model          : %s %s\n", model, modelSrc)
+		fmt.Printf("  auto-edit      : %s %s\n", onOff(a.autoEdit()), sourceLabel(a.config.AutoEdit != nil, c != nil && c.AutoEdit != nil))
+		fmt.Printf("  thinking       : %s %s\n", onOff(a.thinking()), sourceLabel(a.config.Thinking != nil, c != nil && c.Thinking != nil))
+		fmt.Printf("  thinking-effort: %s %s\n", effortString(a.thinkingEffort()), sourceLabel(a.config.ThinkingEffort != nil, c != nil && c.ThinkingEffort != nil))
 		return
 	}
 	switch args[0] {
+	case "model":
+		if len(args) < 2 {
+			fmt.Println("  usage: /config model <model-id>")
+			return
+		}
+		m := args[1]
+		a.config.Model = &m
+		a.sessionDirty = true
+		fmt.Printf("  model: %s\n", m)
 	case "auto-edit":
 		v := !a.autoEdit()
 		a.config.AutoEdit = &v
@@ -340,7 +504,7 @@ func (a *agent) handleConfig(args []string) {
 		a.sessionDirty = true
 		fmt.Printf("  thinking-effort: %s\n", level)
 	default:
-		fmt.Printf("  unknown config key %q; try auto-edit, thinking, or thinking-effort\n", args[0])
+		fmt.Printf("  unknown config key %q; try model, auto-edit, thinking, or thinking-effort\n", args[0])
 	}
 }
 
@@ -362,6 +526,17 @@ func onOff(v bool) string {
 		return green("on")
 	}
 	return red("off")
+}
+
+// sourceLabel returns a dim parenthetical showing where a setting comes from.
+func sourceLabel(fromSession, fromGlobal bool) string {
+	if fromSession {
+		return dim("(session)")
+	}
+	if fromGlobal {
+		return dim("(config file)")
+	}
+	return dim("(default)")
 }
 
 // ---- message validation ---------------------------------------------------
@@ -406,7 +581,7 @@ func isEmptyMessage(msg openai.ChatCompletionMessageParamUnion) bool {
 
 type agent struct {
 	client       openai.Client
-	model        string
+	flagModel    string // from -model flag; empty if not set (fall through to config/env)
 	tools        []openai.ChatCompletionToolParam
 	history      []openai.ChatCompletionMessageParamUnion
 	config       sessionConfig
@@ -415,12 +590,30 @@ type agent struct {
 	sessionDirty bool           // true if history has changed since last save
 }
 
+// effectiveModel resolves the model name through the priority chain:
+// CLI flag > session config > config file > env var > default.
+func (a *agent) effectiveModel() string {
+	if a.flagModel != "" {
+		return a.flagModel
+	}
+	if a.config.Model != nil && *a.config.Model != "" {
+		return *a.config.Model
+	}
+	if c := readGlobalCfg(); c != nil && c.Model != nil && *c.Model != "" {
+		return *c.Model
+	}
+	if m := os.Getenv("MA_MODEL"); m != "" {
+		return m
+	}
+	return "gpt-4o"
+}
+
 // runTurn streams the model's response, printing text as it arrives, and
 // resolves any tool calls — looping until a message has no tool calls.
 func (a *agent) runTurn(ctx context.Context) error {
 	for {
 		params := openai.ChatCompletionNewParams{
-			Model:    openai.ChatModel(a.model),
+			Model:    openai.ChatModel(a.effectiveModel()),
 			Messages: cleanHistory(a.history),
 			Tools:    a.tools,
 		}
@@ -771,33 +964,64 @@ func (a *agent) approve() bool {
 
 // ---- main ----------------------------------------------------------------
 
+// firstNonEmpty returns the first non-empty string from the given candidates.
+func firstNonEmpty(candidates ...string) string {
+	for _, s := range candidates {
+		if s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
 func main() {
-	apiKey := flag.String("ma-api-key", os.Getenv("MA_API_KEY"), "MA API key (or MA_API_KEY)")
-	baseURL := flag.String("url", envOr("MA_BASE_URL", "https://api.openai.com/v1"), "API base URL (or MA_BASE_URL)")
-	model := flag.String("model", envOr("MA_MODEL", "gpt-4o"), "model id")
-	session := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
+	// CLI flags default to empty so we can detect whether they were set.
+	apiKeyFlag := flag.String("ma-api-key", "", "MA API key")
+	baseURLFlag := flag.String("url", "", "API base URL")
+	modelFlag := flag.String("model", "", "model id")
+	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
 	flag.Parse()
 
-	if *apiKey == "" {
-		fmt.Fprintln(os.Stderr, red("✗ no API key; set MA_API_KEY or pass -ma-api-key"))
+	// Load global config file (~/.ma/settings.json).
+	globalMu.Lock()
+	globalCfg = loadGlobalConfig()
+	globalMu.Unlock()
+
+	// Start the file watcher so config changes are picked up live.
+	if err := startConfigWatcher(); err != nil {
+		fmt.Fprintln(os.Stderr, red("config watcher: "+err.Error()))
+	}
+
+	// Resolve API key: flag > config file > env var.
+	apiKey := firstNonEmpty(*apiKeyFlag,
+		cfgStr(globalCfg, func(c *globalConfig) *string { return c.APIKey }),
+		os.Getenv("MA_API_KEY"))
+	if apiKey == "" {
+		fmt.Fprintln(os.Stderr, red("✗ no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -ma-api-key"))
 		os.Exit(1)
 	}
 
+	// Resolve base URL: flag > config file > env var > default.
+	baseURL := firstNonEmpty(*baseURLFlag,
+		cfgStr(globalCfg, func(c *globalConfig) *string { return c.BaseURL }),
+		os.Getenv("MA_BASE_URL"),
+		"https://api.openai.com/v1")
+
 	// The SDK joins the request path onto the base URL, so keep a trailing slash
 	// to preserve any path prefix (e.g. ".../maas/v1").
-	url := strings.TrimRight(*baseURL, "/") + "/"
+	url := strings.TrimRight(baseURL, "/") + "/"
 
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
 	a := &agent{
 		client: openai.NewClient(
-			option.WithAPIKey(*apiKey),
+			option.WithAPIKey(apiKey),
 			option.WithBaseURL(url),
 		),
-		model:       *model,
+		flagModel:   *modelFlag,
 		in:          scanner,
-		sessionName: resolveSession(*session),
+		sessionName: resolveSession(*sessionFlag),
 		tools: []openai.ChatCompletionToolParam{
 			toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
 				prop("command", "string", "the shell command to run"),
@@ -833,7 +1057,7 @@ func main() {
 	}
 
 	// Banner — printed before history so it acts as a header.
-	banner(a.model, a.sessionName)
+	banner(a.effectiveModel(), a.sessionName)
 	if loaded {
 		a.printHistory()
 	}
@@ -877,6 +1101,18 @@ func main() {
 	}
 }
 
+// cfgStr safely dereferences a string pointer from a *globalConfig, returning ""
+// if the config or field is nil.
+func cfgStr(cfg *globalConfig, fn func(*globalConfig) *string) string {
+	if cfg == nil {
+		return ""
+	}
+	if p := fn(cfg); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // property describes one tool input field: its JSON Schema plus whether it is required.
 type property struct {
 	name   string
@@ -918,6 +1154,7 @@ func buildSystemMessage() string {
 	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.")
 	b.WriteString("\n")
 	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
+	b.WriteString("Global user configuration is at ~/.ma/settings.json (JSON, watched via fsnotify).\n")
 	b.WriteString("\n")
 
 	// Current working directory
@@ -961,11 +1198,4 @@ func gitBranch() string {
 		return ref[len(prefix):]
 	}
 	return "" // detached HEAD or unexpected format
-}
-
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
-	}
-	return def
 }
