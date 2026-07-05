@@ -25,13 +25,256 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
+	"sort"
 	"strings"
+	"syscall"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/shared"
 )
+
+// ---- session management -------------------------------------------------
+
+const sessionDir = ".ma-sessions"
+
+// sessionPath returns the file path for a given session name.
+func sessionPath(name string) string {
+	return filepath.Join(sessionDir, name+".json")
+}
+
+// saveSession writes the current history to the session file.
+func (a *agent) saveSession() error {
+	if err := os.MkdirAll(sessionDir, 0755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(a.history, "", "  ")
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(sessionPath(a.sessionName), data, 0644); err != nil {
+		return err
+	}
+	a.sessionDirty = false
+	return nil
+}
+
+// printHistory prints all conversational messages (user + assistant text),
+// skipping system messages, tool calls, tool results, and reasoning blocks.
+func (a *agent) printHistory() {
+	for _, msg := range a.history {
+		if msg.OfUser != nil {
+			fmt.Println("\n" + youPrefix() + msg.OfUser.Content.OfString.Value)
+		}
+		if msg.OfAssistant != nil {
+			// Skip assistant messages that are just tool calls (no text content).
+			if len(msg.OfAssistant.ToolCalls) > 0 {
+				continue
+			}
+			if text := msg.OfAssistant.Content.OfString.Value; text != "" {
+				fmt.Println("\n" + agentPrefix() + text)
+			}
+		}
+		// Skip system, tool, function, and developer messages.
+	}
+}
+
+// loadSession loads history from a session file. Returns an error if the
+// session does not exist.
+func (a *agent) loadSession(name string) error {
+	data, err := os.ReadFile(sessionPath(name))
+	if err != nil {
+		return err
+	}
+	var hist []openai.ChatCompletionMessageParamUnion
+	if err := json.Unmarshal(data, &hist); err != nil {
+		return fmt.Errorf("corrupt session %q: %w", name, err)
+	}
+	if len(hist) == 0 {
+		return fmt.Errorf("empty session %q", name)
+	}
+	a.history = cleanHistory(hist)
+	a.sessionName = name
+	a.sessionDirty = false
+	return nil
+}
+
+// listSessions returns the names of all available sessions, sorted by
+// modification time (newest first).
+func listSessions() ([]string, error) {
+	entries, err := os.ReadDir(sessionDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	type se struct {
+		name string
+		mod  time.Time
+	}
+	var sessions []se
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		name := strings.TrimSuffix(e.Name(), ".json")
+		sessions = append(sessions, se{name, info.ModTime()})
+	}
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].mod.After(sessions[j].mod)
+	})
+	names := make([]string, len(sessions))
+	for i, s := range sessions {
+		names[i] = s.name
+	}
+	return names, nil
+}
+
+// resolveSession figures out which session to start with: the one given on the
+// command line, the one from MA_SESSION env, or the most recent.
+// Returns "" if no session exists and nothing was explicitly requested.
+func resolveSession(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if env := os.Getenv("MA_SESSION"); env != "" {
+		return env
+	}
+	names, _ := listSessions()
+	if len(names) > 0 {
+		return names[0]
+	}
+	return ""
+}
+
+// autoSave saves the session if it has changed since the last save.
+func (a *agent) autoSave() {
+	if !a.sessionDirty {
+		return
+	}
+	if err := a.saveSession(); err != nil {
+		fmt.Fprintf(os.Stderr, "  auto-save failed: %v\n", err)
+	} else {
+		fmt.Printf("  (saved %q)\n", a.sessionName)
+	}
+}
+
+// handleCommand processes a session-management command entered as "/cmd [arg]".
+func (a *agent) handleCommand(cmd string) {
+	parts := strings.Fields(cmd)
+	if len(parts) == 0 {
+		return
+	}
+	switch parts[0] {
+	case "save":
+		// Optional rename: /save <new-name>
+		if len(parts) > 1 {
+			oldName := a.sessionName
+			oldPath := sessionPath(oldName)
+			a.sessionName = parts[1]
+			a.sessionDirty = true
+			// Remove old session file if it exists.
+			os.Remove(oldPath)
+			fmt.Printf("  renamed %q -> %q\n", oldName, a.sessionName)
+		}
+		if err := a.saveSession(); err != nil {
+			fmt.Println("  save error:", err)
+		} else {
+			fmt.Printf("  saved %q (%d messages)\n", a.sessionName, len(a.history))
+		}
+	case "resume":
+		if len(parts) < 2 {
+			fmt.Println("  usage: /resume <name>  (use /list-session to see saved sessions)")
+			return
+		}
+		name := parts[1]
+		if err := a.loadSession(name); err != nil {
+			fmt.Println("  load error:", err)
+		} else {
+			fmt.Printf("  loaded %q (%d messages)\n", name, len(a.history))
+			a.printHistory()
+		}
+	case "new-session":
+		name := ""
+		if len(parts) > 1 {
+			name = parts[1]
+		} else {
+			name = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+		}
+		a.autoSave() // save current session first
+		a.history = []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(buildSystemMessage()),
+		}
+		a.sessionName = name
+		a.sessionDirty = true
+		fmt.Printf("  new session %q\n", name)
+	case "list-session":
+		names, err := listSessions()
+		if err != nil {
+			fmt.Println("  list error:", err)
+			return
+		}
+		if len(names) == 0 {
+			fmt.Println("  (no saved sessions)")
+			return
+		}
+		for _, n := range names {
+			marker := " "
+			if n == a.sessionName {
+				marker = "*"
+			}
+			fmt.Printf("  %s %s\n", marker, n)
+		}
+	default:
+		fmt.Printf("  unknown command: /%s\n", parts[0])
+	}
+}
+
+// ---- message validation ---------------------------------------------------
+
+// cleanHistory removes messages that have neither content nor tool_calls,
+// which would cause a 400 error from the API.
+func cleanHistory(history []openai.ChatCompletionMessageParamUnion) []openai.ChatCompletionMessageParamUnion {
+	out := make([]openai.ChatCompletionMessageParamUnion, 0, len(history))
+	for _, msg := range history {
+		if !isEmptyMessage(msg) {
+			out = append(out, msg)
+		}
+	}
+	return out
+}
+
+// isEmptyMessage returns true if a message has no content AND no tool_calls.
+// Such messages cause 400 errors from the OpenAI API. Tool messages always
+// carry a tool_call_id and are always valid.
+func isEmptyMessage(msg openai.ChatCompletionMessageParamUnion) bool {
+	// System messages: must have non-empty content.
+	if msg.OfSystem != nil {
+		return msg.OfSystem.Content.OfString.Value == ""
+	}
+	// User messages: must have non-empty content.
+	if msg.OfUser != nil {
+		return msg.OfUser.Content.OfString.Value == ""
+	}
+	// Assistant messages: must have non-empty content or non-empty tool_calls.
+	if msg.OfAssistant != nil {
+		hasContent := msg.OfAssistant.Content.OfString.Value != ""
+		hasToolCalls := len(msg.OfAssistant.ToolCalls) > 0
+		return !hasContent && !hasToolCalls
+	}
+	// Tool messages always carry tool_call_id — always valid.
+	// Developer messages always have content — always valid.
+	// Unknown variants: be conservative and keep them.
+	return false
+}
 
 // ---- agent ---------------------------------------------------------------
 
@@ -42,6 +285,8 @@ type agent struct {
 	history        []openai.ChatCompletionMessageParamUnion
 	in             *bufio.Scanner // shared stdin, also used for approval prompts
 	thinkingEffort shared.ReasoningEffort
+	sessionName    string // current session name
+	sessionDirty   bool   // true if history has changed since last save
 }
 
 // runTurn streams the model's response, printing text as it arrives, and
@@ -50,7 +295,7 @@ func (a *agent) runTurn(ctx context.Context) error {
 	for {
 		params := openai.ChatCompletionNewParams{
 			Model:           openai.ChatModel(a.model),
-			Messages:        a.history,
+			Messages:        cleanHistory(a.history),
 			Tools:           a.tools,
 			ReasoningEffort: a.thinkingEffort,
 		}
@@ -100,6 +345,7 @@ func (a *agent) runTurn(ctx context.Context) error {
 
 		msg := acc.Choices[0].Message
 		a.history = append(a.history, msg.ToParam())
+		a.sessionDirty = true
 
 		if len(msg.ToolCalls) == 0 {
 			return nil // turn complete
@@ -360,6 +606,7 @@ func main() {
 	apiKey := flag.String("ma-api-key", os.Getenv("MA_API_KEY"), "MA API key (or MA_API_KEY)")
 	baseURL := flag.String("url", envOr("MA_BASE_URL", "https://api.openai.com/v1"), "API base URL (or MA_BASE_URL)")
 	model := flag.String("model", envOr("MA_MODEL", "gpt-4o"), "model id")
+	session := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
 	flag.Parse()
 
 	if *apiKey == "" {
@@ -382,6 +629,7 @@ func main() {
 		model:          *model,
 		in:             scanner,
 		thinkingEffort: shared.ReasoningEffortMedium,
+		sessionName:    resolveSession(*session),
 		tools: []openai.ChatCompletionToolParam{
 			toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
 				prop("command", "string", "the shell command to run"),
@@ -405,12 +653,33 @@ func main() {
 		},
 	}
 
-	fmt.Printf("minimal agent (model=%s, url=%s, thinking=medium)\nType a request; Ctrl-D or \"exit\" to quit.\n", a.model, url)
+	// Try to load the requested session; if it fails, start fresh.
+	if a.sessionName == "" {
+		// No session to load — start a fresh one.
+		a.sessionName = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+	} else if err := a.loadSession(a.sessionName); err != nil {
+		// Session file gone or corrupt — start fresh under the same name.
+	} else {
+		a.printHistory()
+	}
+
+	fmt.Printf("minimal agent (model=%s, url=%s, session=%s, thinking=medium)\nType a request; Ctrl-D or \"exit\" to quit.\n", a.model, url, a.sessionName)
+
+	// Catch SIGINT (Ctrl-C) and save before exiting.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println() // newline after "^C"
+		a.autoSave()
+		os.Exit(0)
+	}()
 
 	ctx := context.Background()
 	for {
 		fmt.Print("\n" + youPrefix())
 		if !scanner.Scan() {
+			a.autoSave()
 			break
 		}
 		line := strings.TrimSpace(scanner.Text())
@@ -418,10 +687,18 @@ func main() {
 			continue
 		}
 		if line == "exit" || line == "quit" {
+			a.autoSave()
 			break
 		}
 
+		// Session commands (prefixed with "/")
+		if strings.HasPrefix(line, "/") {
+			a.handleCommand(strings.TrimPrefix(line, "/"))
+			continue
+		}
+
 		a.history = append(a.history, openai.UserMessage(line))
+		a.sessionDirty = true
 		if err := a.runTurn(ctx); err != nil {
 			fmt.Fprintln(os.Stderr, "error: "+err.Error())
 		}
@@ -465,11 +742,14 @@ func toolDef(name, description string, props ...property) openai.ChatCompletionT
 }
 
 // buildSystemMessage constructs the system prompt, injecting dynamic context
-// like the current working directory, git branch, and any AGENTS.md file.
+// like the current working directory, git branch, and the project's AGENTS.md
+// (development guidelines for working on this codebase).
 func buildSystemMessage() string {
 	var b strings.Builder
 	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.")
-	b.WriteString("\n\n")
+	b.WriteString("\n")
+	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
+	b.WriteString("\n")
 
 	// Current working directory
 	if cwd, err := os.Getwd(); err == nil {
