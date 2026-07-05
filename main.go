@@ -25,6 +25,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -330,7 +331,7 @@ func main() {
 			),
 		},
 		history: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short."),
+			openai.SystemMessage(buildSystemMessage()),
 		},
 	}
 
@@ -391,6 +392,56 @@ func toolDef(name, description string, props ...property) openai.ChatCompletionT
 			},
 		},
 	}
+}
+
+// buildSystemMessage constructs the system prompt, injecting dynamic context
+// like the current working directory, git branch, and any AGENTS.md file.
+func buildSystemMessage() string {
+	var b strings.Builder
+	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.")
+	b.WriteString("\n\n")
+
+	// Current working directory
+	if cwd, err := os.Getwd(); err == nil {
+		b.WriteString("Current working directory: ")
+		b.WriteString(cwd)
+		b.WriteString("\n")
+	}
+
+	// Git branch (if in a git repo)
+	if branch := gitBranch(); branch != "" {
+		b.WriteString("Current git branch: ")
+		b.WriteString(branch)
+		b.WriteString("\n")
+	}
+
+	// AGENTS.md (or similar files) — check common names in precedence order
+	for _, name := range []string{"AGENTS.md", "CLAUDE.md", ".agents.md", "CONTEXT.md"} {
+		if data, err := os.ReadFile(name); err == nil {
+			b.WriteString("\n--- ")
+			b.WriteString(name)
+			b.WriteString(" ---\n")
+			b.WriteString(string(data))
+			break // only include one
+		}
+	}
+
+	return b.String()
+}
+
+// gitBranch returns the current git branch, or empty string if not in a repo.
+func gitBranch() string {
+	// Try reading .git/HEAD directly — avoids spawning a process.
+	head, err := os.ReadFile(filepath.Join(".git", "HEAD"))
+	if err != nil {
+		return ""
+	}
+	ref := strings.TrimSpace(string(head))
+	const prefix = "ref: refs/heads/"
+	if strings.HasPrefix(ref, prefix) {
+		return ref[len(prefix):]
+	}
+	return "" // detached HEAD or unexpected format
 }
 
 func envOr(key, def string) string {
