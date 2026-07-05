@@ -32,6 +32,9 @@ Flags override environment variables.
 | Base URL | `MA_BASE_URL` | `-url`         | `https://api.openai.com/v1` |
 | Model    | `MA_MODEL`    | `-model`       | `gpt-4o`                    |
 
+Thinking mode is always on with effort `medium`. Reasoning content is rendered
+in dim italic inline with the response.
+
 The `-url` value is the API base (must include `/v1`); the client appends
 `/chat/completions`. Point it at any OpenAI-compatible gateway:
 

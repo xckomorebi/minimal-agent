@@ -30,33 +30,48 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/shared"
 )
 
 // ---- agent ---------------------------------------------------------------
 
 type agent struct {
-	client  openai.Client
-	model   string
-	tools   []openai.ChatCompletionToolParam
-	history []openai.ChatCompletionMessageParamUnion
-	in      *bufio.Scanner // shared stdin, also used for approval prompts
+	client         openai.Client
+	model          string
+	tools          []openai.ChatCompletionToolParam
+	history        []openai.ChatCompletionMessageParamUnion
+	in             *bufio.Scanner // shared stdin, also used for approval prompts
+	thinkingEffort shared.ReasoningEffort
 }
 
 // runTurn streams the model's response, printing text as it arrives, and
 // resolves any tool calls — looping until a message has no tool calls.
 func (a *agent) runTurn(ctx context.Context) error {
 	for {
-		stream := a.client.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{
-			Model:    openai.ChatModel(a.model),
-			Messages: a.history,
-			Tools:    a.tools,
-		})
+		params := openai.ChatCompletionNewParams{
+			Model:           openai.ChatModel(a.model),
+			Messages:        a.history,
+			Tools:           a.tools,
+			ReasoningEffort: a.thinkingEffort,
+		}
+		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 
 		acc := openai.ChatCompletionAccumulator{}
 		printed := false
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
+
+			// Try to extract reasoning_content from the raw JSON — the SDK
+			// doesn't expose it as a named field on the delta struct yet.
+			if reasoning := extractReasoning(chunk.RawJSON()); reasoning != "" {
+				if !printed {
+					fmt.Print("\nagent> ")
+					printed = true
+				}
+				fmt.Print(dim(reasoning))
+			}
+
 			if len(chunk.Choices) == 0 {
 				continue
 			}
@@ -88,6 +103,30 @@ func (a *agent) runTurn(ctx context.Context) error {
 			a.history = append(a.history, a.runTool(call))
 		}
 	}
+}
+
+// extractReasoning pulls reasoning_content from a raw SSE chunk JSON. Returns ""
+// on failure (malformed JSON, missing field, etc.).
+func extractReasoning(raw string) string {
+	var chunk struct {
+		Choices []struct {
+			Delta struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"delta"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+		return ""
+	}
+	if len(chunk.Choices) == 0 {
+		return ""
+	}
+	return chunk.Choices[0].Delta.ReasoningContent
+}
+
+// dim wraps text in ANSI escape codes for dim/italic rendering.
+func dim(s string) string {
+	return "\033[2m\033[3m" + s + "\033[0m"
 }
 
 // runTool dispatches a single tool call to its handler and returns a tool result.
@@ -310,8 +349,9 @@ func main() {
 			option.WithAPIKey(*apiKey),
 			option.WithBaseURL(url),
 		),
-		model: *model,
-		in:    scanner,
+		model:          *model,
+		in:             scanner,
+		thinkingEffort: shared.ReasoningEffortMedium,
 		tools: []openai.ChatCompletionToolParam{
 			toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
 				prop("command", "string", "the shell command to run"),
@@ -335,7 +375,7 @@ func main() {
 		},
 	}
 
-	fmt.Printf("minimal agent (model=%s, url=%s)\nType a request; Ctrl-D or \"exit\" to quit.\n", a.model, url)
+	fmt.Printf("minimal agent (model=%s, url=%s, thinking=medium)\nType a request; Ctrl-D or \"exit\" to quit.\n", a.model, url)
 
 	ctx := context.Background()
 	for {
