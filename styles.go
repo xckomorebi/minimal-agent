@@ -77,6 +77,11 @@ var (
 	approvalStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("3"))
 
+	// Question text.
+	questionStyle = lipgloss.NewStyle().
+			Bold(true).
+			Foreground(lipgloss.Color("6"))
+
 	// Banner box.
 	bannerBorderStyle = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("8"))
@@ -435,15 +440,23 @@ func renderApproval(name, detail string) string {
 	return approvalStyle.Render("run "+name+"?") + " " + dimStyle.Render(detail) + " [y/N] "
 }
 
+func truncateStr(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
+}
+
 // toolCallBrief extracts a short description from a tool call's arguments.
 // Used when rendering tool calls in history.
 func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 	var args struct {
-		Command string `json:"command"`
-		Path    string `json:"path"`
-		Content string `json:"content"`
-		Query   string `json:"query"`
-		URL     string `json:"url"`
+		Command  string `json:"command"`
+		Path     string `json:"path"`
+		Content  string `json:"content"`
+		Query    string `json:"query"`
+		URL      string `json:"url"`
+		Question string `json:"question"`
 	}
 	json.Unmarshal([]byte(tc.Function.Arguments), &args)
 
@@ -458,6 +471,8 @@ func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 		return args.Query
 	case "web-fetch":
 		return args.URL
+	case "ask_user_question":
+		return fmt.Sprintf("? %s", truncateStr(args.Question, 60))
 	default:
 		return ""
 	}

@@ -37,6 +37,16 @@ type compactDoneMsg struct {
 	result string // compact result to display
 }
 
+// questionMsg is sent by the agent when ask_user_question is invoked.
+// The TUI displays the question and options, waits for user input,
+// and sends the answer back through the respond channel.
+type questionMsg struct {
+	question   string
+	options    []string
+	allowOther bool
+	respond    chan<- string
+}
+
 type tickMsg time.Time
 
 // --- autocomplete ---
@@ -86,6 +96,16 @@ type tuiModel struct {
 
 	// Agent running state.
 	agentRunning bool
+
+	// Question state (ask_user_question tool).
+	questionActive     bool
+	questionText       string
+	questionOptions    []string
+	questionAllowOther bool
+	questionCh         chan<- string
+	questionSelected   int
+	questionInput      string // custom text being typed by the user
+	questionCursorPos  int    // cursor position within questionInput
 
 	// Autocomplete state.
 	autocomplete autocompleteState
@@ -462,6 +482,136 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
+		// --- Question mode: navigate options, type answer, Enter/Ctrl-C ---
+		if m.questionActive {
+			otherIdx := len(m.questionOptions)
+			editingOther := m.questionAllowOther && m.questionSelected == otherIdx
+
+			switch msg.Type {
+			case tea.KeyCtrlC, tea.KeyEscape:
+				// Cancel the question.
+				m.questionActive = false
+				if m.questionCh != nil {
+					m.questionCh <- ""
+				}
+				m.questionCh = nil
+				m.updateViewportContent()
+				return m, waitForMsg(m.msgCh)
+			case tea.KeyUp:
+				if m.questionSelected > 0 {
+					m.questionSelected--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDown:
+				maxIdx := otherIdx
+				if !m.questionAllowOther {
+					maxIdx--
+				}
+				if m.questionSelected < maxIdx {
+					m.questionSelected++
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyLeft:
+				if editingOther && m.questionCursorPos > 0 {
+					m.questionCursorPos--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyRight:
+				if editingOther && m.questionCursorPos < len(m.questionInput) {
+					m.questionCursorPos++
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyHome:
+				if editingOther {
+					m.questionCursorPos = 0
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnd:
+				if editingOther {
+					m.questionCursorPos = len(m.questionInput)
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnter:
+				answer := m.selectedQuestionAnswer()
+				m.questionActive = false
+				if m.questionCh != nil {
+					m.questionCh <- answer
+				}
+				m.questionCh = nil
+				m.updateViewportContent()
+				return m, waitForMsg(m.msgCh)
+			case tea.KeyBackspace:
+				if editingOther && len(m.questionInput) > 0 && m.questionCursorPos > 0 {
+					m.questionInput = m.questionInput[:m.questionCursorPos-1] + m.questionInput[m.questionCursorPos:]
+					m.questionCursorPos--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDelete:
+				if editingOther && m.questionCursorPos < len(m.questionInput) {
+					m.questionInput = m.questionInput[:m.questionCursorPos] + m.questionInput[m.questionCursorPos+1:]
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyRunes:
+				s := string(msg.Runes)
+				// Number keys 1-9: select option directly (only when not editing other text).
+				if !editingOther && len(s) == 1 && s[0] >= '1' && s[0] <= '9' {
+					idx := int(s[0] - '1')
+					maxIdx := otherIdx
+					if !m.questionAllowOther {
+						maxIdx--
+					}
+					if idx <= maxIdx {
+						m.questionSelected = idx
+						// Submit immediately on number key — but if on "other", let them type.
+						if !m.questionAllowOther || idx < otherIdx {
+							answer := m.selectedQuestionAnswer()
+							m.questionActive = false
+							if m.questionCh != nil {
+								m.questionCh <- answer
+							}
+							m.questionCh = nil
+							m.updateViewportContent()
+							return m, waitForMsg(m.msgCh)
+						}
+						// On "other": just select it so they can start typing.
+						m.updateViewportContent()
+						return m, nil
+					}
+				}
+				// Any printable char: type into the "other" input at cursor position.
+				if m.questionAllowOther {
+					if !editingOther {
+						m.questionSelected = otherIdx
+					}
+					m.questionInput = m.questionInput[:m.questionCursorPos] + s + m.questionInput[m.questionCursorPos:]
+					m.questionCursorPos += len(s)
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeySpace:
+				// Space: type into the "other" input at cursor position.
+				if m.questionAllowOther {
+					if !editingOther {
+						m.questionSelected = otherIdx
+					}
+					m.questionInput = m.questionInput[:m.questionCursorPos] + " " + m.questionInput[m.questionCursorPos:]
+					m.questionCursorPos++
+				}
+				m.updateViewportContent()
+				return m, nil
+			default:
+				return m, nil
+			}
+		}
+
 		// Arrow keys, page up/down, home/end: scroll viewport (always, even during streaming).
 		// But skip if autocomplete is showing (handled above).
 		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown ||
@@ -669,8 +819,27 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateViewportContent()
 		return m, nil
 
+	case questionMsg:
+		m.flushStreaming()
+		m.questionActive = true
+		m.questionText = msg.question
+		m.questionOptions = msg.options
+		m.questionAllowOther = msg.allowOther
+		m.questionCh = msg.respond
+		m.questionSelected = 0
+		m.questionInput = ""
+		m.questionCursorPos = 0
+		// If there are no options, default to allow_other=true (open-ended).
+		if len(m.questionOptions) == 0 {
+			m.questionAllowOther = true
+		}
+		// Commit the question to the viewport.
+		m.push(roleAgent, questionStyle.Render("? "+msg.question))
+		m.updateViewportContent()
+		return m, nil
+
 	case tickMsg:
-		if m.thinkingActive || m.agentRunning {
+		if m.thinkingActive || m.agentRunning || m.questionActive {
 			m.starVisible = !m.starVisible
 		}
 		cmds = append(cmds, tickCmd())
@@ -850,6 +1019,8 @@ func (m tuiModel) View() string {
 	// Input area.
 	if m.waitingApproval {
 		b.WriteString(dimStyle.Render("  press y/N ..."))
+	} else if m.questionActive {
+		b.WriteString(m.renderQuestionInput())
 	} else if m.agentRunning {
 		b.WriteString(dimStyle.Render("  ..."))
 	} else {
@@ -919,7 +1090,89 @@ func (m *tuiModel) renderPicker() string {
 	return box + "\n"
 }
 
-// renderAutocomplete renders the autocomplete suggestion bar.
+// selectedQuestionAnswer returns the answer based on the current question state.
+func (m *tuiModel) selectedQuestionAnswer() string {
+	hasOptions := len(m.questionOptions) > 0
+	otherIdx := len(m.questionOptions)
+
+	if hasOptions && m.questionSelected < otherIdx {
+		return m.questionOptions[m.questionSelected]
+	}
+	// Custom input or "other" selected.
+	if m.questionInput != "" {
+		return m.questionInput
+	}
+	// User hit Enter on "other..." without typing — return empty.
+	return ""
+}
+
+// renderQuestionInput renders the question options and input area.
+func (m *tuiModel) renderQuestionInput() string {
+	var b strings.Builder
+
+	selectStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimOptStyle := dimStyle
+
+	for i, opt := range m.questionOptions {
+		marker := "  "
+		prefix := fmt.Sprintf("%d.", i+1)
+		if i == m.questionSelected {
+			marker = "> "
+			b.WriteString(selectStyle.Render(marker + prefix + " " + opt))
+		} else {
+			b.WriteString(dimOptStyle.Render(marker + prefix + " " + opt))
+		}
+		b.WriteString("\n")
+	}
+
+	// "Other..." entry for custom input.
+	if m.questionAllowOther {
+		otherIdx := len(m.questionOptions)
+		editingOther := m.questionSelected == otherIdx
+
+		if editingOther {
+			// Show the input with cursor when selected.
+			before := m.questionInput[:m.questionCursorPos]
+			at := ""
+			if m.questionCursorPos < len(m.questionInput) {
+				at = string(m.questionInput[m.questionCursorPos])
+			}
+			after := ""
+			if m.questionCursorPos+1 < len(m.questionInput) {
+				after = m.questionInput[m.questionCursorPos+1:]
+			}
+
+			cursorChar := " "
+			if m.starVisible {
+				cursorChar = "▌"
+			}
+			cursor := selectStyle.Render(cursorChar)
+
+			label := before + cursor + at + after
+			if label == "" {
+				label = cursor
+			}
+			b.WriteString(selectStyle.Render("> ") + label)
+		} else {
+			label := m.questionInput
+			if label == "" {
+				label = "other..."
+			}
+			b.WriteString(dimOptStyle.Render("  " + label))
+		}
+		b.WriteString("\n")
+	}
+
+	// Prompt line.
+	if m.questionAllowOther {
+		b.WriteString(dimStyle.Render("  type answer or select option (↑↓), Enter to confirm, Esc to cancel"))
+	} else {
+		b.WriteString(dimStyle.Render("  select option (↑↓ or 1-9), Enter to confirm, Esc to cancel"))
+	}
+	b.WriteString("\n")
+
+	return b.String()
+}
 func (m *tuiModel) renderAutocomplete() string {
 	var parts []string
 	for i, s := range m.autocomplete.suggestions {

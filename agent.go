@@ -387,6 +387,7 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		Query            string `json:"query"`
 		URL              string `json:"url"`
 		Name             string `json:"name"`
+		Question         string `json:"question"`
 	}
 	json.Unmarshal([]byte(call.Function.Arguments), &args)
 
@@ -411,6 +412,8 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		return false, "web-fetch", args.URL
 	case "skill":
 		return false, "skill", args.Name
+	case "ask_user_question":
+		return false, "ask", args.Question
 	default:
 		return false, call.Function.Name, ""
 	}
@@ -464,6 +467,8 @@ func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessa
 		return a.webFetch(ctx, call), false
 	case "skill":
 		return a.runSkill(call), false
+	case "ask_user_question":
+		return a.askUserQuestion(ctx, call), false
 	default:
 		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
 	}

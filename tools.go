@@ -23,19 +23,38 @@ import (
 
 type property struct {
 	name   string
-	schema map[string]string
+	schema map[string]any
 }
 
 func prop(name, typ, description string) property {
-	return property{name: name, schema: map[string]string{"type": typ, "description": description}}
+	return property{name: name, schema: map[string]any{"type": typ, "description": description}}
+}
+
+func arrayProp(name, itemType, description string) property {
+	return property{
+		name: name,
+		schema: map[string]any{
+			"type":        "array",
+			"items":       map[string]string{"type": itemType},
+			"description": description,
+		},
+	}
 }
 
 func toolDef(name, description string, props ...property) openai.ChatCompletionToolParam {
+	return toolDefOpt(name, description, nil, props...)
+}
+
+// toolDefOpt creates a tool definition where some props are not required.
+// notRequired is a list of property names that should not be in the required array.
+func toolDefOpt(name, description string, notRequired map[string]bool, props ...property) openai.ChatCompletionToolParam {
 	properties := map[string]any{}
 	required := make([]string, 0, len(props))
 	for _, p := range props {
 		properties[p.name] = p.schema
-		required = append(required, p.name)
+		if notRequired == nil || !notRequired[p.name] {
+			required = append(required, p.name)
+		}
 	}
 	return openai.ChatCompletionToolParam{
 		Function: openai.FunctionDefinitionParam{
@@ -154,6 +173,12 @@ func builtinTools() []openai.ChatCompletionToolParam {
 		),
 		toolDef("skill", "Load a skill from ~/.agents/skills/<name>. Skills are reusable instruction sets for specific tasks, domains, or workflows. Use this when the user asks you to perform a task that might have a corresponding skill file, or when you need domain-specific guidance — load the skill first and its instructions will tell you how to proceed. Call with name='list' to see all available skills.",
 			prop("name", "string", "the skill name (subdirectory under ~/.agents/skills/). Use 'list' to see available skills."),
+		),
+		toolDefOpt("ask_user_question", "Ask the user a question and wait for their answer. Use this when you need clarification, a decision, or input from the user before proceeding. The user can select from the provided options or (if allow_other is true) type their own custom answer.",
+			map[string]bool{"options": true, "allow_other": true},
+			prop("question", "string", "the question to ask the user"),
+			arrayProp("options", "string", "pre-defined answer options the user can choose from using arrow keys or number keys (optional, leave empty for open-ended questions)"),
+			prop("allow_other", "boolean", "whether to let the user type a custom answer not in the options list (default true)"),
 		),
 	}
 }
@@ -474,6 +499,40 @@ func (a *agent) runSkill(call openai.ChatCompletionMessageToolCall) openai.ChatC
 		return openai.ToolMessage("(empty skill file)", call.ID)
 	}
 	return openai.ToolMessage("--- skill: "+args.Name+" ---\n"+string(data), call.ID)
+}
+
+func (a *agent) askUserQuestion(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	var raw struct {
+		Question   string   `json:"question"`
+		Options    []string `json:"options"`
+		AllowOther *bool    `json:"allow_other,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &raw); err != nil || raw.Question == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"question": "...", "options": [...], "allow_other": true}`, call.ID)
+	}
+	allowOther := true
+	if raw.AllowOther != nil {
+		allowOther = *raw.AllowOther
+	}
+
+	respondCh := make(chan string, 1)
+	a.sendCritical(questionMsg{
+		question:   raw.Question,
+		options:    raw.Options,
+		allowOther: allowOther,
+		respond:    respondCh,
+	})
+
+	var answer string
+	select {
+	case answer = <-respondCh:
+	case <-ctx.Done():
+		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
+	}
+	if answer == "" {
+		return openai.ToolMessage("error: user cancelled or provided no answer", call.ID)
+	}
+	return openai.ToolMessage("user answer: "+answer, call.ID)
 }
 
 // htmlToText strips HTML down to readable plain text.
