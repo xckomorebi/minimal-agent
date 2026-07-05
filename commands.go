@@ -3,104 +3,221 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
 	"github.com/openai/openai-go"
 )
 
-// handleCommandStr processes a command and returns a display string.
+// commandSpec describes a slash command.
+type commandSpec struct {
+	name        string
+	description string                                       // short one-line for /help listing
+	detail      string                                       // longer help for /help <cmd>
+	handler     func(a *agent, parts []string) string        // parts[0] is the command name
+}
+
+// commands maps command name → spec. The map is populated in init().
+var commands map[string]commandSpec
+
+func init() {
+	commands = map[string]commandSpec{
+		"save": {
+			name:        "save",
+			description: "save the current session",
+			detail:      "save [name] — persist the current conversation. If a name is given, rename the session first.",
+			handler:     cmdSave,
+		},
+		"resume": {
+			name:        "resume",
+			description: "load a saved session",
+			detail:      "resume <name> — load a previously saved session. Use /list-session to see available names.",
+			handler:     cmdResume,
+		},
+		"new-session": {
+			name:        "new-session",
+			description: "start a new session",
+			detail:      "new-session [name] — save the current session and start a fresh one. If no name is given, a timestamped name is generated.",
+			handler:     cmdNewSession,
+		},
+		"list-session": {
+			name:        "list-session",
+			description: "list all saved sessions",
+			detail:      "list-session — show all saved sessions with their summaries. The current session is marked with *.",
+			handler:     cmdListSession,
+		},
+		"re-summarize": {
+			name:        "re-summarize",
+			description: "regenerate the session summary",
+			detail:      "re-summarize — re-generate the short one-line summary used as the session title. Uses the first user message.",
+			handler:     cmdReSummarize,
+		},
+		"config": {
+			name:        "config",
+			description: "show or change configuration",
+			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail.",
+			handler:     cmdConfig,
+		},
+		"help": {
+			name:        "help",
+			description: "show slash command help",
+			detail:      "help [command] — list all available slash commands with descriptions, or show detailed help for a specific command.",
+			handler:     cmdHelp,
+		},
+	}
+}
+
+// handleCommandStr processes a slash command and returns a display string.
 func (a *agent) handleCommandStr(cmd string) string {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
 		return ""
 	}
-	switch parts[0] {
-	case "save":
-		if len(parts) > 1 {
-			oldName := a.sessionName
-			oldPath := sessionPath(oldName)
-			a.sessionName = parts[1]
-			a.sessionDirty = true
-			os.Remove(oldPath)
-		}
-		if err := a.saveSession(); err != nil {
-			return "save error: " + err.Error()
-		}
-		return fmt.Sprintf("saved %q (%d messages)", a.sessionName, len(a.history))
-	case "resume":
-		if len(parts) < 2 {
-			return "usage: /resume <name>  (use /list-session to see saved sessions)"
-		}
-		name := parts[1]
-		if err := a.loadSession(name); err != nil {
-			return "load error: " + err.Error()
-		}
-		a.reasonings = nil
-		a.fileMtimes = nil
-		return fmt.Sprintf("loaded %q (%d messages)", name, len(a.history))
-	case "new-session":
-		name := ""
-		if len(parts) > 1 {
-			name = parts[1]
-		} else {
-			name = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
-		}
-		a.autoSave()
-		a.history = []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage(buildSystemMessage()),
-		}
-		a.sessionName = name
+	spec, ok := commands[parts[0]]
+	if !ok {
+		return "unknown command: /" + parts[0] + "  (try /help to see available commands)"
+	}
+	return spec.handler(a, parts)
+}
+
+// --- command handlers ---
+
+func cmdSave(a *agent, parts []string) string {
+	if len(parts) > 1 {
+		oldName := a.sessionName
+		oldPath := sessionPath(oldName)
+		a.sessionName = parts[1]
 		a.sessionDirty = true
-		a.summary = ""
-		a.summaryGenerated = false
-		a.reasonings = nil
-		a.fileMtimes = nil
-		return fmt.Sprintf("new session %q", name)
-	case "list-session":
-		names, err := listSessions()
-		if err != nil {
-			return "list error: " + err.Error()
+		os.Remove(oldPath)
+	}
+	if err := a.saveSession(); err != nil {
+		return "save error: " + err.Error()
+	}
+	return fmt.Sprintf("saved %q (%d messages)", a.sessionName, len(a.history))
+}
+
+func cmdResume(a *agent, parts []string) string {
+	if len(parts) < 2 {
+		return "usage: /resume <name>  (use /list-session to see saved sessions)"
+	}
+	name := parts[1]
+	if err := a.loadSession(name); err != nil {
+		return "load error: " + err.Error()
+	}
+	a.reasonings = nil
+	a.fileMtimes = nil
+	return fmt.Sprintf("loaded %q (%d messages)", name, len(a.history))
+}
+
+func cmdNewSession(a *agent, parts []string) string {
+	name := ""
+	if len(parts) > 1 {
+		name = parts[1]
+	} else {
+		name = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+	}
+	a.autoSave()
+	a.history = []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(buildSystemMessage()),
+	}
+	a.sessionName = name
+	a.sessionDirty = true
+	a.summary = ""
+	a.summaryGenerated = false
+	a.reasonings = nil
+	a.fileMtimes = nil
+	return fmt.Sprintf("new session %q", name)
+}
+
+func cmdListSession(a *agent, parts []string) string {
+	names, err := listSessions()
+	if err != nil {
+		return "list error: " + err.Error()
+	}
+	if len(names) == 0 {
+		return "(no saved sessions)"
+	}
+	var b strings.Builder
+	for i, n := range names {
+		if i > 0 {
+			b.WriteString("\n")
 		}
-		if len(names) == 0 {
-			return "(no saved sessions)"
+		if n == a.sessionName {
+			b.WriteString("*" + n)
+		} else {
+			b.WriteString(n)
+		}
+		if s := sessionSummary(n); s != "" {
+			b.WriteString(" ‒ " + s)
+		}
+	}
+	return b.String()
+}
+
+func cmdReSummarize(a *agent, parts []string) string {
+	a.summaryGenerated = false
+	// Find the first user message to pass as a prompt.
+	var userText string
+	for _, m := range a.history {
+		if m.OfUser != nil {
+			userText = m.OfUser.Content.OfString.Value
+			break
+		}
+	}
+	a.generateSessionSummary(userText)
+	if a.summary == "" {
+		return "could not generate summary (no user message yet?)"
+	}
+	return "summary: " + a.summary
+}
+
+func cmdConfig(a *agent, parts []string) string {
+	return a.handleConfigStr(parts[1:])
+}
+
+// cmdHelp shows all commands (with descriptions) or detailed help for one.
+func cmdHelp(a *agent, parts []string) string {
+	if len(parts) > 1 {
+		// /help <command>
+		name := parts[1]
+		spec, ok := commands[name]
+		if !ok {
+			return "unknown command: /" + name
 		}
 		var b strings.Builder
-		for i, n := range names {
-			if i > 0 {
-				b.WriteString("\n")
-			}
-			if n == a.sessionName {
-				b.WriteString("*" + n)
-			} else {
-				b.WriteString(n)
-			}
-			if s := sessionSummary(n); s != "" {
-				b.WriteString(" ‒ " + s)
-			}
-		}
+		b.WriteString("/")
+		b.WriteString(spec.name)
+		b.WriteString("\n\n")
+		b.WriteString(spec.detail)
 		return b.String()
-	case "re-summarize":
-		a.summaryGenerated = false
-		// Find the first user message to pass as a prompt.
-		var userText string
-		for _, m := range a.history {
-			if m.OfUser != nil {
-				userText = m.OfUser.Content.OfString.Value
-				break
-			}
-		}
-		a.generateSessionSummary(userText)
-		if a.summary == "" {
-			return "could not generate summary (no user message yet?)"
-		}
-		return "summary: " + a.summary
-	case "config":
-		return a.handleConfigStr(parts[1:])
-	default:
-		return "unknown command: /" + parts[0]
 	}
+
+	// /help — list all commands.
+	// Sort by name for a stable order.
+	names := make([]string, 0, len(commands))
+	for n := range commands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("slash commands:\n\n")
+	maxLen := 0
+	for _, n := range names {
+		if len(n) > maxLen {
+			maxLen = len(n)
+		}
+	}
+	for _, n := range names {
+		spec := commands[n]
+		b.WriteString(fmt.Sprintf("  /%-*s  %s\n", maxLen, spec.name, spec.description))
+	}
+	b.WriteString("\ntype /help <command> for details")
+	return b.String()
 }
+
+// --- config sub-handler ---
 
 // handleConfigStr returns config info as a multi-line string.
 func (a *agent) handleConfigStr(args []string) string {
@@ -171,6 +288,8 @@ func onOff(v bool) string {
 	return "off"
 }
 
+// --- autocomplete ---
+
 // autocompleteCommand returns possible completions for a slash command at the
 // given cursor position in the input text. It returns nil if no completions
 // are available.
@@ -197,8 +316,6 @@ func autocompleteCommand(input string, cursorPos int) []string {
 	trailingSpace := len(rest) > 0 && rest[len(rest)-1] == ' '
 
 	if trailingSpace {
-		// User typed e.g. "/config " → cursor after the space, suggest
-		// subcommands.
 		parts = append(parts, "")
 	}
 
@@ -229,9 +346,19 @@ func autocompleteCommand(input string, cursorPos int) []string {
 
 	// We have a recognized command. Now handle subcommands/args per command.
 	switch cmdName {
+	case "help":
+		if len(parts) >= 2 {
+			helpArgs := parts[1:]
+			if trailingSpace && len(helpArgs) > 0 && helpArgs[len(helpArgs)-1] == "" {
+				helpArgs = helpArgs[:len(helpArgs)-1]
+			}
+			return autocompleteHelpArg(helpArgs, trailingSpace)
+		}
+		if trailingSpace {
+			return commandNames()
+		}
+		return filterPrefix(cmdName, commandNames())
 	case "config":
-		// Strip the trailing "" added for trailingSpace before passing to the
-		// config-specific autocomplete function.
 		configArgs := parts[1:]
 		if trailingSpace && len(configArgs) > 0 && configArgs[len(configArgs)-1] == "" {
 			configArgs = configArgs[:len(configArgs)-1]
@@ -252,9 +379,28 @@ func autocompleteCommand(input string, cursorPos int) []string {
 	}
 }
 
-// commandNames returns all slash command names.
+// autocompleteHelpArg handles autocomplete for /help <command>.
+func autocompleteHelpArg(args []string, trailingSpace bool) []string {
+	if len(args) == 0 {
+		if trailingSpace {
+			return commandNames()
+		}
+		return nil
+	}
+	if len(args) == 1 && !trailingSpace {
+		return filterPrefix(args[0], commandNames())
+	}
+	return nil
+}
+
+// commandNames returns all slash command names, sorted.
 func commandNames() []string {
-	return []string{"save", "resume", "new-session", "list-session", "config", "re-summarize"}
+	names := make([]string, 0, len(commands))
+	for n := range commands {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // autocompleteConfigArg handles autocomplete for /config subcommands.

@@ -993,6 +993,7 @@ func (m *tuiModel) renderCommand(line string) {
 
 	for _, ln := range strings.Split(result, "\n") {
 		if ln == "" {
+			m.push(roleCommand, "")
 			continue
 		}
 		if cmdName == "config" && strings.Contains(ln, ":") {
@@ -1005,7 +1006,7 @@ func (m *tuiModel) renderCommand(line string) {
 					inputPromptStyle.Render(key)+
 					dimStyle.Render(":"+rest))
 		} else {
-			m.push(roleCommand, dimStyle.Render("  "+ln))
+			m.commitCommand(ln)
 		}
 	}
 	m.updateViewportContent()
@@ -1022,6 +1023,7 @@ func (m *tuiModel) contentWidth() int {
 }
 
 func (m *tuiModel) commitUser(text string) {
+	isCmd := strings.HasPrefix(text, "/")
 	prefix := "you> "
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 	cw := m.contentWidth()
@@ -1030,10 +1032,14 @@ func (m *tuiModel) commitUser(text string) {
 		wrapWidth = 80
 	}
 	for i, line := range wordWrap(text, wrapWidth) {
+		styledLine := line
+		if isCmd {
+			styledLine = cmdTextStyle.Render(line)
+		}
 		if i == 0 {
-			m.push(roleUser, youStyle.Render(prefix)+line)
+			m.push(roleUser, youStyle.Render(prefix)+styledLine)
 		} else {
-			m.push(roleUser, indent+line)
+			m.push(roleUser, indent+styledLine)
 		}
 	}
 }
@@ -1069,6 +1075,23 @@ func (m *tuiModel) commitThinkingDetail(text string) {
 			m.push(roleAgent, prefix+reasonStyle.Render(line))
 		} else {
 			m.push(roleAgent, indent+reasonStyle.Render(line))
+		}
+	}
+}
+
+func (m *tuiModel) commitCommand(text string) {
+	prefix := dimStyle.Render("  ")
+	indent := dimStyle.Render("  ")
+	cw := m.contentWidth()
+	wrapWidth := cw - lipgloss.Width("  ")
+	if wrapWidth < 20 {
+		wrapWidth = 80
+	}
+	for i, line := range wordWrap(text, wrapWidth) {
+		if i == 0 {
+			m.push(roleCommand, prefix+line)
+		} else {
+			m.push(roleCommand, indent+line)
 		}
 	}
 }

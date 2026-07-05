@@ -25,6 +25,10 @@ var (
 			Bold(true).
 			Foreground(lipgloss.Color("6"))
 
+	// Slash command text in history: bright blue.
+	cmdTextStyle = lipgloss.NewStyle().
+			Foreground(lipgloss.Color("12"))
+
 	// Agent prefix: bold green.
 	agentStyle = lipgloss.NewStyle().
 			Bold(true).
