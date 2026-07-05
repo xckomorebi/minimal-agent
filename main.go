@@ -41,6 +41,50 @@ import (
 
 const sessionDir = ".ma-sessions"
 
+// sessionConfig holds per-session overrides. Fields use pointers so that
+// unset keys (nil) are omitted from JSON and fall through to global defaults.
+type sessionConfig struct {
+	AutoEdit       *bool   `json:"auto_edit,omitempty"`
+	Thinking       *bool   `json:"thinking,omitempty"`
+	ThinkingEffort *string `json:"thinking_effort,omitempty"`
+}
+
+// sessionFile is the top-level JSON structure stored in a session file.
+type sessionFile struct {
+	Config  sessionConfig                                `json:"config"`
+	History []openai.ChatCompletionMessageParamUnion     `json:"history"`
+}
+
+// ---- effective config ------------------------------------------------------
+// These resolve a session-level override against the global default.
+// Global defaults are hardcoded for now; they will move to a config file later.
+
+func (a *agent) autoEdit() bool {
+	if a.config.AutoEdit != nil {
+		return *a.config.AutoEdit
+	}
+	return false // global default
+}
+
+func (a *agent) thinking() bool {
+	if a.config.Thinking != nil {
+		return *a.config.Thinking
+	}
+	return true // global default
+}
+
+func (a *agent) thinkingEffort() shared.ReasoningEffort {
+	if a.config.ThinkingEffort != nil {
+		switch *a.config.ThinkingEffort {
+		case "low":
+			return shared.ReasoningEffortLow
+		case "high":
+			return shared.ReasoningEffortHigh
+		}
+	}
+	return shared.ReasoningEffortMedium // global default
+}
+
 // sessionPath returns the file path for a given session name.
 func sessionPath(name string) string {
 	return filepath.Join(sessionDir, name+".json")
@@ -51,7 +95,11 @@ func (a *agent) saveSession() error {
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(a.history, "", "  ")
+	sf := sessionFile{
+		Config:  a.config,
+		History: a.history,
+	}
+	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -82,13 +130,29 @@ func (a *agent) printHistory() {
 	}
 }
 
-// loadSession loads history from a session file. Returns an error if the
-// session does not exist.
+// loadSession loads history and config from a session file. Returns an error
+// if the session does not exist. Handles both the legacy format (bare JSON
+// array) and the current format ({"config":..., "history":...}).
 func (a *agent) loadSession(name string) error {
 	data, err := os.ReadFile(sessionPath(name))
 	if err != nil {
 		return err
 	}
+
+	// Try new format first: {"config":..., "history":...}
+	var sf sessionFile
+	if err := json.Unmarshal(data, &sf); err == nil && sf.History != nil {
+		a.config = sf.Config
+		a.history = cleanHistory(sf.History)
+		if len(a.history) == 0 {
+			return fmt.Errorf("empty session %q", name)
+		}
+		a.sessionName = name
+		a.sessionDirty = false
+		return nil
+	}
+
+	// Fall back to legacy format: bare JSON array
 	var hist []openai.ChatCompletionMessageParamUnion
 	if err := json.Unmarshal(data, &hist); err != nil {
 		return fmt.Errorf("corrupt session %q: %w", name, err)
@@ -99,6 +163,7 @@ func (a *agent) loadSession(name string) error {
 	a.history = cleanHistory(hist)
 	a.sessionName = name
 	a.sessionDirty = false
+	// Keep default config for legacy sessions.
 	return nil
 }
 
@@ -213,6 +278,7 @@ func (a *agent) handleCommand(cmd string) {
 		a.history = []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(buildSystemMessage()),
 		}
+		// Copy current session config to the new session.
 		a.sessionName = name
 		a.sessionDirty = true
 		fmt.Printf("  new session %q\n", name)
@@ -233,9 +299,69 @@ func (a *agent) handleCommand(cmd string) {
 				fmt.Printf("    %s\n", n)
 			}
 		}
+	case "config":
+		a.handleConfig(parts[1:])
 	default:
 		fmt.Printf("  unknown command: /%s\n", parts[0])
 	}
+}
+
+// handleConfig processes /config commands to view or change session settings.
+func (a *agent) handleConfig(args []string) {
+	if len(args) == 0 {
+		// Show effective config (session overrides merged with global defaults).
+		fmt.Printf("  auto-edit      : %s\n", onOff(a.autoEdit()))
+		fmt.Printf("  thinking       : %s\n", onOff(a.thinking()))
+		fmt.Printf("  thinking-effort: %s\n", effortString(a.thinkingEffort()))
+		return
+	}
+	switch args[0] {
+	case "auto-edit":
+		v := !a.autoEdit()
+		a.config.AutoEdit = &v
+		a.sessionDirty = true
+		fmt.Printf("  auto-edit: %s\n", onOff(v))
+	case "thinking":
+		v := !a.thinking()
+		a.config.Thinking = &v
+		a.sessionDirty = true
+		fmt.Printf("  thinking: %s\n", onOff(v))
+	case "thinking-effort":
+		if len(args) < 2 {
+			fmt.Println("  usage: /config thinking-effort <low|medium|high>")
+			return
+		}
+		level := strings.ToLower(args[1])
+		if level != "low" && level != "medium" && level != "high" {
+			fmt.Printf("  unknown effort level %q (use low, medium, or high)\n", args[1])
+			return
+		}
+		a.config.ThinkingEffort = &level
+		a.sessionDirty = true
+		fmt.Printf("  thinking-effort: %s\n", level)
+	default:
+		fmt.Printf("  unknown config key %q; try auto-edit, thinking, or thinking-effort\n", args[0])
+	}
+}
+
+// effortString returns the string form of a ReasoningEffort.
+func effortString(e shared.ReasoningEffort) string {
+	switch e {
+	case shared.ReasoningEffortLow:
+		return "low"
+	case shared.ReasoningEffortHigh:
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+// onOff returns "on" or "off" for a boolean.
+func onOff(v bool) string {
+	if v {
+		return green("on")
+	}
+	return red("off")
 }
 
 // ---- message validation ---------------------------------------------------
@@ -279,14 +405,14 @@ func isEmptyMessage(msg openai.ChatCompletionMessageParamUnion) bool {
 // ---- agent ---------------------------------------------------------------
 
 type agent struct {
-	client         openai.Client
-	model          string
-	tools          []openai.ChatCompletionToolParam
-	history        []openai.ChatCompletionMessageParamUnion
-	in             *bufio.Scanner // shared stdin, also used for approval prompts
-	thinkingEffort shared.ReasoningEffort
-	sessionName    string // current session name
-	sessionDirty   bool   // true if history has changed since last save
+	client       openai.Client
+	model        string
+	tools        []openai.ChatCompletionToolParam
+	history      []openai.ChatCompletionMessageParamUnion
+	config       sessionConfig
+	in           *bufio.Scanner // shared stdin, also used for approval prompts
+	sessionName  string         // current session name
+	sessionDirty bool           // true if history has changed since last save
 }
 
 // runTurn streams the model's response, printing text as it arrives, and
@@ -294,10 +420,12 @@ type agent struct {
 func (a *agent) runTurn(ctx context.Context) error {
 	for {
 		params := openai.ChatCompletionNewParams{
-			Model:           openai.ChatModel(a.model),
-			Messages:        cleanHistory(a.history),
-			Tools:           a.tools,
-			ReasoningEffort: a.thinkingEffort,
+			Model:    openai.ChatModel(a.model),
+			Messages: cleanHistory(a.history),
+			Tools:    a.tools,
+		}
+		if a.thinking() {
+			params.ReasoningEffort = a.thinkingEffort()
 		}
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 
@@ -520,7 +648,7 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.Chat
 	}
 
 	fmt.Printf("\n  %s%s %s (%d bytes)\n", toolDot(), toolLabel("write"), args.Path, len(args.Content))
-	if !a.approve() {
+	if !a.autoEdit() && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to write this file", call.ID)
 	}
@@ -560,7 +688,7 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 
 	fmt.Println("\n  " + toolDot() + toolLabel("edit") + " " + args.Path)
 	printDiff(content, args.OldString, args.NewString)
-	if !a.approve() {
+	if !a.autoEdit() && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID)
 	}
@@ -667,10 +795,9 @@ func main() {
 			option.WithAPIKey(*apiKey),
 			option.WithBaseURL(url),
 		),
-		model:          *model,
-		in:             scanner,
-		thinkingEffort: shared.ReasoningEffortMedium,
-		sessionName:    resolveSession(*session),
+		model:       *model,
+		in:          scanner,
+		sessionName: resolveSession(*session),
 		tools: []openai.ChatCompletionToolParam{
 			toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
 				prop("command", "string", "the shell command to run"),
