@@ -262,10 +262,13 @@ func (a *agent) doTurn(ctx context.Context) {
 			return
 		}
 
+		calls := msg.ToolCalls
 		denied := false
-		for _, call := range msg.ToolCalls {
+		for i := range calls {
+			call := calls[i]
 			select {
 			case <-ctx.Done():
+				a.appendCancelledResults(calls[i:])
 				a.sendCritical(turnErrMsg{ctx.Err()})
 				return
 			default:
@@ -290,6 +293,7 @@ func (a *agent) doTurn(ctx context.Context) {
 				select {
 				case approved = <-respondCh:
 				case <-ctx.Done():
+					a.appendCancelledResults(calls[i:])
 					a.sendCritical(turnErrMsg{ctx.Err()})
 					return
 				}
@@ -301,7 +305,7 @@ func (a *agent) doTurn(ctx context.Context) {
 				}
 			}
 
-			result, toolDenied := a.runToolCall(call)
+			result, toolDenied := a.runToolCall(ctx, call)
 			a.history = append(a.history, result)
 
 			// Extract result text for display (skip "read" — too verbose).
@@ -391,10 +395,10 @@ func (a *agent) toolDiffLines(call openai.ChatCompletionMessageToolCall) []strin
 }
 
 // runToolCall executes a tool call and returns the tool-result message and denied flag.
-func (a *agent) runToolCall(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	switch call.Function.Name {
 	case "bash":
-		return a.runBash(call)
+		return a.runBash(ctx, call)
 	case "read":
 		return a.readFile(call), false
 	case "write":
@@ -402,9 +406,9 @@ func (a *agent) runToolCall(call openai.ChatCompletionMessageToolCall) (openai.C
 	case "edit":
 		return a.editFile(call)
 	case "web-search":
-		return a.webSearch(call), false
+		return a.webSearch(ctx, call), false
 	case "web-fetch":
-		return a.webFetch(call), false
+		return a.webFetch(ctx, call), false
 	default:
 		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
 	}
@@ -426,6 +430,20 @@ func (a *agent) toolResultText(msg openai.ChatCompletionMessageParamUnion) strin
 // toolDeniedMessage creates a tool result for a denied tool call.
 func toolDeniedMessage(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	return openai.ToolMessage("error: the user denied permission to run this command", call.ID)
+}
+
+// toolCancelledMessage creates a tool result for a cancelled tool call.
+func toolCancelledMessage(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
+}
+
+// appendCancelledResults appends cancelled tool results for each call in the
+// slice and sends a display event for each.
+func (a *agent) appendCancelledResults(calls []openai.ChatCompletionMessageToolCall) {
+	for _, call := range calls {
+		a.history = append(a.history, toolCancelledMessage(call))
+		a.sendDisplay(toolResultDisplayMsg{result: "(canceled)"})
+	}
 }
 
 // userMessage creates a user message for the given line.

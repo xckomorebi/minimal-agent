@@ -220,8 +220,23 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// --- Approval mode: y/n/Ctrl-C ---
 		if m.waitingApproval {
 			switch msg.Type {
+			case tea.KeyCtrlC:
+				// Cancel the agent turn outright.
+				m.waitingApproval = false
+				m.cancel()
+				m.ctx, m.cancel = context.WithCancel(context.Background())
+				if m.approvalCh != nil {
+					select {
+					case m.approvalCh <- false:
+					default:
+					}
+				}
+				m.approvalCh = nil
+				m.updateViewportContent()
+				return m, waitForMsg(m.msgCh)
 			case tea.KeyRunes:
 				switch string(msg.Runes) {
 				case "y", "Y", "yes":
@@ -233,21 +248,19 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, waitForMsg(m.msgCh)
 				case "n", "N", "no":
 					m.waitingApproval = false
-					m.agentRunning = false
 					if m.approvalCh != nil {
 						m.approvalCh <- false
 					}
 					m.approvalCh = nil
-					return m, nil
+					return m, waitForMsg(m.msgCh)
 				}
 			case tea.KeyEnter, tea.KeyEscape:
 				m.waitingApproval = false
-				m.agentRunning = false
 				if m.approvalCh != nil {
 					m.approvalCh <- false
 				}
 				m.approvalCh = nil
-				return m, nil
+				return m, waitForMsg(m.msgCh)
 			}
 			return m, nil
 		}
@@ -263,6 +276,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.Type {
 		case tea.KeyCtrlC:
+			if m.agentRunning {
+				// Cancel the current turn but keep the session alive.
+				m.cancel()
+				m.ctx, m.cancel = context.WithCancel(context.Background())
+				m.flushStreaming()
+				// turnErrMsg handler will push "[canceled]" and set agentRunning=false.
+				m.updateViewportContent()
+				return m, waitForMsg(m.msgCh)
+			}
+			// Not running: exit the program.
 			m.cancel()
 			m.agent.autoSave()
 			return m, tea.Quit
@@ -395,7 +418,16 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case turnErrMsg:
 		m.flushStreaming()
 		m.agentRunning = false
-		m.push(roleAgent, renderError(msg.Error()))
+		// A canceled context means the user pressed Ctrl-C to abort the turn.
+		if msg.error == context.Canceled {
+			m.push(roleAgent, dimStyle.Render("  [canceled]"))
+		} else {
+			m.push(roleAgent, renderError(msg.Error()))
+		}
+		// Save now so the user message (and any partial assistant+tools
+		// already appended before cancel) is persisted.
+		m.agent.sessionDirty = true
+		m.agent.autoSave()
 		m.updateViewportContent()
 		return m, nil
 
@@ -555,7 +587,7 @@ func (m tuiModel) View() string {
 	b.WriteString("\n")
 
 	// Key hints, right above the separator line.
-	b.WriteString(dimStyle.Render("Ctrl-C quit · Ctrl-O toggle thinking · ↑↓ scroll"))
+	b.WriteString(dimStyle.Render("Ctrl-C cancel (idle: quit) · Ctrl-O toggle thinking · ↑↓ scroll"))
 	b.WriteString("\n")
 
 	// Separator.

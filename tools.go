@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,6 +12,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -91,7 +94,7 @@ func allTools() []openai.ChatCompletionToolParam {
 
 // --- tool implementations ---
 
-func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	var args struct {
 		Command          string `json:"command"`
 		RequiresApproval bool   `json:"requires_approval"`
@@ -101,15 +104,41 @@ func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) (openai.ChatC
 	}
 
 	// Approval is handled by the TUI before this is called.
-	out, err := exec.Command("bash", "-c", args.Command).CombinedOutput()
-	result := string(out)
-	if err != nil {
-		result += "\n[exit: " + err.Error() + "]"
+	// Use a process group so that cancel kills bash and all its children.
+	cmd := exec.Command("bash", "-c", args.Command)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	cmd.Stderr = &out
+
+	if err := cmd.Start(); err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
-	if result == "" {
-		result = "(no output)"
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		result := out.String()
+		if err != nil {
+			// Distinguish context cancel from real errors.
+			if ctx.Err() != nil {
+				return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID), false
+			}
+			result += "\n[exit: " + err.Error() + "]"
+		}
+		if result == "" {
+			result = "(no output)"
+		}
+		return openai.ToolMessage(result, call.ID), false
+	case <-ctx.Done():
+		// Kill the entire process group so children don't outlive the cancel.
+		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		<-done
+		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID), false
 	}
-	return openai.ToolMessage(result, call.ID), false
 }
 
 func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
@@ -198,7 +227,7 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.Chat
 // ddgSearchRate limits how fast we hit DuckDuckGo.
 var ddgSearchRate = time.NewTicker(800 * time.Millisecond)
 
-func (a *agent) webSearch(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) webSearch(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Query string `json:"query"`
 		Num   int    `json:"num,omitempty"`
@@ -214,10 +243,14 @@ func (a *agent) webSearch(call openai.ChatCompletionMessageToolCall) openai.Chat
 	}
 
 	// Rate-limit to avoid triggering bot detection.
-	<-ddgSearchRate.C
+	select {
+	case <-ddgSearchRate.C:
+	case <-ctx.Done():
+		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
+	}
 
 	form := url.Values{"q": {args.Query}}
-	req, err := http.NewRequest("POST", "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
+	req, err := http.NewRequestWithContext(ctx, "POST", "https://html.duckduckgo.com/html/", strings.NewReader(form.Encode()))
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
@@ -227,6 +260,9 @@ func (a *agent) webSearch(call openai.ChatCompletionMessageToolCall) openai.Chat
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
+		}
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 	defer resp.Body.Close()
@@ -277,7 +313,7 @@ func (a *agent) webSearch(call openai.ChatCompletionMessageToolCall) openai.Chat
 	return openai.ToolMessage(strings.Join(results, "\n"), call.ID)
 }
 
-func (a *agent) webFetch(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) webFetch(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		URL string `json:"url"`
 	}
@@ -286,7 +322,7 @@ func (a *agent) webFetch(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	}
 
 	client := &http.Client{Timeout: 15 * time.Second}
-	req, err := http.NewRequest("GET", args.URL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", args.URL, nil)
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
@@ -295,6 +331,9 @@ func (a *agent) webFetch(call openai.ChatCompletionMessageToolCall) openai.ChatC
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
+		}
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 	defer resp.Body.Close()
