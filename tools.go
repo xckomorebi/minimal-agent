@@ -153,6 +153,14 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) (openai.Cha
 	}
 
 	fmt.Printf("\n  %s%s %s (%d bytes)\n", toolDot(), toolLabel("write"), args.Path, len(args.Content))
+
+	// If file exists, show a diff between old and new content.
+	if existing, err := os.ReadFile(args.Path); err == nil {
+		printWriteDiff(string(existing), args.Content)
+	} else {
+		printWriteDiff("", args.Content)
+	}
+
 	if !a.autoEdit() && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to write this file", call.ID), true
@@ -299,6 +307,101 @@ func printDiff(content, oldString, newString string) {
 		pad(ln, " ", afterLines[i])
 		ln++
 	}
+}
+
+// printWriteDiff prints a unified diff between old and new full-file content.
+func printWriteDiff(oldContent, newContent string) {
+	split := func(s string) []string {
+		if s == "" {
+			return []string{""}
+		}
+		return strings.Split(s, "\n")
+	}
+	oldLines := split(oldContent)
+	newLines := split(newContent)
+
+	// New file: show all lines as additions.
+	if oldContent == "" {
+		fmt.Printf("@@ -0,0 +1,%d @@\n", len(newLines))
+		for _, line := range newLines {
+			fmt.Printf("      \033[32m+%s\033[0m\n", line)
+		}
+		fmt.Println()
+		return
+	}
+
+	// Find common prefix lines.
+	commonPrefix := 0
+	for commonPrefix < len(oldLines) && commonPrefix < len(newLines) &&
+		oldLines[commonPrefix] == newLines[commonPrefix] {
+		commonPrefix++
+	}
+
+	// Find common suffix lines (after the prefix).
+	commonSuffix := 0
+	oi := len(oldLines) - 1
+	ni := len(newLines) - 1
+	for commonSuffix < len(oldLines)-commonPrefix && commonSuffix < len(newLines)-commonPrefix &&
+		oldLines[oi] == newLines[ni] {
+		commonSuffix++
+		oi--
+		ni--
+	}
+
+	ctxBefore := min(3, commonPrefix)
+	ctxAfter := min(3, commonSuffix)
+
+	// Unified diff header.
+	startLine := commonPrefix - ctxBefore + 1
+	oldCount := (len(oldLines) - commonPrefix - commonSuffix) + ctxBefore + ctxAfter
+	newCount := (len(newLines) - commonPrefix - commonSuffix) + ctxBefore + ctxAfter
+	fmt.Printf("@@ -%d,%d +%d,%d @@\n", startLine, oldCount, startLine, newCount)
+
+	pad := func(ln int, marker, line string) {
+		switch marker {
+		case " ":
+			fmt.Printf("%4d  %s\n", ln, line)
+		case "-":
+			fmt.Printf("%4d  \033[31m-%s\033[0m\n", ln, line)
+		default:
+			fmt.Printf("      \033[32m+%s\033[0m\n", line)
+		}
+	}
+
+	// Context before.
+	ln := startLine
+	for i := commonPrefix - ctxBefore; i < commonPrefix; i++ {
+		pad(ln, " ", oldLines[i])
+		ln++
+	}
+
+	// Removed old lines.
+	oldChgEnd := ln
+	for i := commonPrefix; i < len(oldLines)-commonSuffix; i++ {
+		pad(ln, "-", oldLines[i])
+		ln++
+		oldChgEnd = ln
+	}
+
+	// Added new lines.
+	for i := commonPrefix; i < len(newLines)-commonSuffix; i++ {
+		pad(0, "+", newLines[i])
+	}
+
+	// Common suffix.
+	ln = oldChgEnd
+	for i := len(oldLines) - commonSuffix; i < len(oldLines); i++ {
+		pad(ln, " ", oldLines[i])
+		ln++
+	}
+
+	// Context after.
+	for i := len(oldLines) - commonSuffix; i < len(oldLines)-commonSuffix+ctxAfter && i < len(oldLines); i++ {
+		pad(ln, " ", oldLines[i])
+		ln++
+	}
+
+	fmt.Println()
 }
 
 func (a *agent) approve() bool {
