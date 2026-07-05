@@ -10,6 +10,90 @@ import (
 	"github.com/openai/openai-go"
 )
 
+// --- tool definition helpers ---
+
+type property struct {
+	name   string
+	schema map[string]string
+}
+
+func prop(name, typ, description string) property {
+	return property{name: name, schema: map[string]string{"type": typ, "description": description}}
+}
+
+func toolDef(name, description string, props ...property) openai.ChatCompletionToolParam {
+	properties := map[string]any{}
+	required := make([]string, 0, len(props))
+	for _, p := range props {
+		properties[p.name] = p.schema
+		required = append(required, p.name)
+	}
+	return openai.ChatCompletionToolParam{
+		Function: openai.FunctionDefinitionParam{
+			Name:        name,
+			Description: openai.String(description),
+			Parameters: openai.FunctionParameters{
+				"type":       "object",
+				"properties": properties,
+				"required":   required,
+			},
+		},
+	}
+}
+
+// --- built-in tools ---
+
+func builtinTools() []openai.ChatCompletionToolParam {
+	return []openai.ChatCompletionToolParam{
+		toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
+			prop("command", "string", "the shell command to run"),
+			prop("requires_approval", "boolean", "whether this command needs explicit user approval before running. Set true for anything destructive, irreversible, or state-changing (writes, deletes, moves, installs, network calls, git push, etc.); set false for read-only inspection (ls, cat, grep, git status, etc.)."),
+		),
+		toolDef("read", "Read and return the full contents of a file at the given path.",
+			prop("path", "string", "path to the file to read"),
+		),
+		toolDef("write", "Write (creating or overwriting) a file with the given content. Use this for new files; use edit to modify an existing file. Always prompts the user for approval.",
+			prop("path", "string", "path to the file to write"),
+			prop("content", "string", "the full content to write to the file"),
+		),
+		toolDef("edit", "Modify an existing file by replacing an exact, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unique. Always prompts the user for approval.",
+			prop("path", "string", "path to the file to edit"),
+			prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
+			prop("new_string", "string", "the replacement text"),
+		),
+	}
+}
+
+// --- external tools (placeholder) ---
+
+// Register external tools by appending to this slice at init time.
+var externalTools []openai.ChatCompletionToolParam
+
+// --- combined ---
+
+func allTools() []openai.ChatCompletionToolParam {
+	return append(builtinTools(), externalTools...)
+}
+
+// --- tool dispatch ---
+
+func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	switch call.Function.Name {
+	case "bash":
+		return a.runBash(call)
+	case "read":
+		return a.readFile(call)
+	case "write":
+		return a.writeFile(call)
+	case "edit":
+		return a.editFile(call)
+	default:
+		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID)
+	}
+}
+
+// --- tool implementations ---
+
 func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Command          string `json:"command"`

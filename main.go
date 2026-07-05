@@ -35,35 +35,6 @@ func cfgStr(cfg *globalConfig, fn func(*globalConfig) *string) string {
 	return ""
 }
 
-type property struct {
-	name   string
-	schema map[string]string
-}
-
-func prop(name, typ, description string) property {
-	return property{name: name, schema: map[string]string{"type": typ, "description": description}}
-}
-
-func toolDef(name, description string, props ...property) openai.ChatCompletionToolParam {
-	properties := map[string]any{}
-	required := make([]string, 0, len(props))
-	for _, p := range props {
-		properties[p.name] = p.schema
-		required = append(required, p.name)
-	}
-	return openai.ChatCompletionToolParam{
-		Function: openai.FunctionDefinitionParam{
-			Name:        name,
-			Description: openai.String(description),
-			Parameters: openai.FunctionParameters{
-				"type":       "object",
-				"properties": properties,
-				"required":   required,
-			},
-		},
-	}
-}
-
 func buildSystemMessage() string {
 	var b strings.Builder
 	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.")
@@ -151,24 +122,7 @@ func main() {
 		flagModel:   *modelFlag,
 		in:          scanner,
 		sessionName: resolveSession(*sessionFlag),
-		tools: []openai.ChatCompletionToolParam{
-			toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
-				prop("command", "string", "the shell command to run"),
-				prop("requires_approval", "boolean", "whether this command needs explicit user approval before running. Set true for anything destructive, irreversible, or state-changing (writes, deletes, moves, installs, network calls, git push, etc.); set false for read-only inspection (ls, cat, grep, git status, etc.)."),
-			),
-			toolDef("read", "Read and return the full contents of a file at the given path.",
-				prop("path", "string", "path to the file to read"),
-			),
-			toolDef("write", "Write (creating or overwriting) a file with the given content. Use this for new files; use edit to modify an existing file. Always prompts the user for approval.",
-				prop("path", "string", "path to the file to write"),
-				prop("content", "string", "the full content to write to the file"),
-			),
-			toolDef("edit", "Modify an existing file by replacing an exact, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unique. Always prompts the user for approval.",
-				prop("path", "string", "path to the file to edit"),
-				prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
-				prop("new_string", "string", "the replacement text"),
-			),
-		},
+		tools: allTools(),
 		history: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(buildSystemMessage()),
 		},

@@ -149,7 +149,19 @@ func (a *agent) runTurn(ctx context.Context) error {
 		}
 
 		msg := acc.Choices[0].Message
-		a.history = append(a.history, msg.ToParam())
+		param := msg.ToParam()
+		// Work around openai-go ToAssistantMessageParam not copying the Type
+		// field (see ChatCompletionMessage.ToAssistantMessageParam). Without
+		// this the tool-call history sent back to the API has "type":"" which
+		// causes the model to silently stop responding after tool results.
+		if param.OfAssistant != nil {
+			for i := range param.OfAssistant.ToolCalls {
+				if param.OfAssistant.ToolCalls[i].Type == "" {
+					param.OfAssistant.ToolCalls[i].Type = "function"
+				}
+			}
+		}
+		a.history = append(a.history, param)
 		a.sessionDirty = true
 
 		if len(msg.ToolCalls) == 0 {
@@ -186,17 +198,4 @@ func extractReasoning(raw string) string {
 	return chunk.Choices[0].Delta.ReasoningContent
 }
 
-func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
-	switch call.Function.Name {
-	case "bash":
-		return a.runBash(call)
-	case "read":
-		return a.readFile(call)
-	case "write":
-		return a.writeFile(call)
-	case "edit":
-		return a.editFile(call)
-	default:
-		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID)
-	}
-}
+
