@@ -36,6 +36,25 @@ type turnErrMsg struct{ error }
 
 type tickMsg time.Time
 
+// --- autocomplete ---
+
+type autocompleteState struct {
+	suggestions []string
+	selected    int
+}
+
+// --- picker ---
+
+type pickerItem struct {
+	name    string
+	current bool // is this the current session?
+}
+
+type pickerState struct {
+	items    []pickerItem
+	selected int
+}
+
 // --- model ---
 
 type tuiModel struct {
@@ -63,6 +82,12 @@ type tuiModel struct {
 
 	// Agent running state.
 	agentRunning bool
+
+	// Autocomplete state.
+	autocomplete autocompleteState
+
+	// Picker state.
+	picker pickerState
 
 	// Message channel for agent → TUI communication.
 	msgCh chan tea.Msg
@@ -185,6 +210,101 @@ func newTUIModel(a *agent) tuiModel {
 	}
 }
 
+// --- Autocomplete & picker helpers ---
+
+// computeAutocomplete populates the autocomplete state based on the current
+// textarea value and cursor position. If there's exactly one match, it applies
+// it immediately; otherwise it opens the suggestion popup.
+func (m *tuiModel) computeAutocomplete() {
+	input := m.textarea.Value()
+	pos := len(input) // cursor is typically at end when Tab triggers autocomplete
+	suggestions := autocompleteCommand(input, pos)
+	if len(suggestions) == 0 {
+		m.autocomplete = autocompleteState{}
+		return
+	}
+	if len(suggestions) == 1 {
+		m.applyCompletion(suggestions[0])
+		m.autocomplete = autocompleteState{}
+		return
+	}
+	m.autocomplete = autocompleteState{
+		suggestions: suggestions,
+		selected:    0,
+	}
+}
+
+// applyAutocomplete applies the currently-selected autocomplete suggestion to
+// the textarea and dismisses the popup.
+func (m *tuiModel) applyAutocomplete() {
+	if len(m.autocomplete.suggestions) == 0 {
+		return
+	}
+	choice := m.autocomplete.suggestions[m.autocomplete.selected]
+	m.applyCompletion(choice)
+	m.autocomplete = autocompleteState{}
+}
+
+// applyCompletion replaces the last word before the cursor with the given
+// completion string.
+func (m *tuiModel) applyCompletion(choice string) {
+	input := m.textarea.Value()
+	pos := len(input) // cursor position
+
+	// Find the end of the word before the cursor. We treat the input as
+	// slash-command-structured: words are separated by spaces.
+	upToCursor := input[:pos]
+	afterCursor := input[pos:]
+
+	// Find the start of the last word.
+	lastSpace := strings.LastIndex(upToCursor, " ")
+	wordStart := 0
+	if lastSpace >= 0 {
+		wordStart = lastSpace + 1
+	}
+	// Preserve the leading "/" when completing the first word of a slash command.
+	if wordStart == 0 && strings.HasPrefix(input, "/") {
+		wordStart = 1
+	}
+
+	// Build the new value: everything before the word + completion + after cursor.
+	newValue := upToCursor[:wordStart] + choice + afterCursor
+	m.textarea.SetValue(newValue)
+
+	// Move cursor to end of the inserted completion.
+	newPos := wordStart + len(choice)
+	m.textarea.CursorEnd()
+	// textarea.CursorEnd moves to the end; we can use SetCursor if needed.
+	_ = newPos
+}
+
+// openSessionPicker opens a picker to select a saved session. Used by /resume
+// when no session name is provided.
+func (m *tuiModel) openSessionPicker() {
+	names, err := listSessions()
+	if err != nil || len(names) == 0 {
+		// No sessions to pick; just show the normal usage message.
+		m.commitUser("/resume")
+		m.push(roleCommand, dimStyle.Render("  (no saved sessions)"))
+		m.updateViewportContent()
+		return
+	}
+	items := make([]pickerItem, len(names))
+	for i, n := range names {
+		items[i] = pickerItem{
+			name:    n,
+			current: n == m.agent.sessionName,
+		}
+	}
+	m.picker = pickerState{
+		items:    items,
+		selected: 0,
+	}
+	// Clear the textarea so Enter doesn't leave a stray slash.
+	m.textarea.Reset()
+	m.updateViewportContent()
+}
+
 // --- Bubble Tea interface ---
 
 func (m tuiModel) Init() tea.Cmd {
@@ -221,6 +341,71 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// --- Picker mode: arrow keys, enter, esc ---
+		if len(m.picker.items) > 0 {
+			switch msg.Type {
+			case tea.KeyUp:
+				if m.picker.selected > 0 {
+					m.picker.selected--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDown:
+				if m.picker.selected < len(m.picker.items)-1 {
+					m.picker.selected++
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnter:
+				// Execute the picked item.
+				selected := m.picker.items[m.picker.selected].name
+				m.picker = pickerState{}
+				cmd := "/resume " + selected
+				m.renderCommand(cmd)
+				return m, nil
+			case tea.KeyEscape, tea.KeyCtrlC:
+				m.picker = pickerState{}
+				m.updateViewportContent()
+				return m, nil
+			}
+			return m, nil
+		}
+
+		// --- Autocomplete active: tab/arrows to navigate, enter to accept, esc to cancel ---
+		if len(m.autocomplete.suggestions) > 0 {
+			switch msg.Type {
+			case tea.KeyTab:
+				m.autocomplete.selected = (m.autocomplete.selected + 1) % len(m.autocomplete.suggestions)
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyShiftTab, tea.KeyUp:
+				if m.autocomplete.selected > 0 {
+					m.autocomplete.selected--
+				} else {
+					m.autocomplete.selected = len(m.autocomplete.suggestions) - 1
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDown:
+				m.autocomplete.selected = (m.autocomplete.selected + 1) % len(m.autocomplete.suggestions)
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnter:
+				m.applyAutocomplete()
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEscape:
+				m.autocomplete = autocompleteState{}
+				m.updateViewportContent()
+				return m, nil
+			default:
+				// Any other key dismisses autocomplete and is processed normally.
+				m.autocomplete = autocompleteState{}
+				m.updateViewportContent()
+				// Fall through to normal key handling.
+			}
+		}
+
 		// --- Approval mode: y/n/Ctrl-C ---
 		if m.waitingApproval {
 			switch msg.Type {
@@ -267,6 +452,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Arrow keys, page up/down, home/end: scroll viewport (always, even during streaming).
+		// But skip if autocomplete is showing (handled above).
 		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown ||
 			msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
 			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd {
@@ -298,6 +484,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuildOutput()
 			return m, nil
 
+		case tea.KeyTab:
+			if m.agentRunning {
+				return m, nil
+			}
+			m.computeAutocomplete()
+			m.updateViewportContent()
+			return m, nil
+
 		case tea.KeyEnter:
 			if m.agentRunning {
 				return m, nil
@@ -309,6 +503,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			if strings.HasPrefix(line, "/") {
+				// Check for commands that should trigger the picker.
+				parts := strings.Fields(strings.TrimPrefix(line, "/"))
+				if len(parts) == 0 {
+					// Just "/" — show unknown command.
+					m.renderCommand(line)
+					return m, nil
+				}
+				if parts[0] == "resume" && len(parts) == 1 {
+					m.openSessionPicker()
+					return m, nil
+				}
 				m.renderCommand(line)
 				return m, nil
 			}
@@ -603,6 +808,13 @@ func (m tuiModel) View() string {
 	b.WriteString(dimStyle.Render(strings.Repeat("─", m.width)))
 	b.WriteString("\n")
 
+	// --- Render picker or autocomplete ---
+	if len(m.picker.items) > 0 {
+		b.WriteString(m.renderPicker())
+	} else if len(m.autocomplete.suggestions) > 0 {
+		b.WriteString(m.renderAutocomplete())
+	}
+
 	// Input area.
 	if m.waitingApproval {
 		b.WriteString(dimStyle.Render("  press y/N ..."))
@@ -613,6 +825,78 @@ func (m tuiModel) View() string {
 	}
 
 	return appStyle.Render(b.String())
+}
+
+// renderPicker renders the session picker popup as a bordered box.
+func (m *tuiModel) renderPicker() string {
+	// Determine box width: longest name + padding.
+	maxName := 0
+	for _, it := range m.picker.items {
+		if len(it.name) > maxName {
+			maxName = len(it.name)
+		}
+	}
+	boxWidth := min(maxName+12, m.width-4)
+	if boxWidth < 24 {
+		boxWidth = 24
+	}
+	innerWidth := boxWidth - 4 // border + padding
+
+	var lines []string
+	// Title.
+	title := dimStyle.Render("select session")
+	lines = append(lines, title)
+
+	// Items.
+	for i, it := range m.picker.items {
+		marker := "  "
+		if i == m.picker.selected {
+			marker = "> "
+		}
+		label := it.name
+		if it.current {
+			label = lipgloss.NewStyle().Underline(true).Render(label)
+		}
+		line := marker + label
+		// Pad to innerWidth.
+		if lipgloss.Width(line) < innerWidth {
+			line += strings.Repeat(" ", innerWidth-lipgloss.Width(line))
+		}
+		if i == m.picker.selected {
+			line = lipgloss.NewStyle().Foreground(lipgloss.Color("6")).Render(line)
+		} else {
+			line = dimStyle.Render(line)
+		}
+		lines = append(lines, line)
+	}
+
+	body := strings.Join(lines, "\n")
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("8")).
+		Padding(0, 1).
+		Width(boxWidth).
+		Render(body)
+	return box + "\n"
+}
+
+// renderAutocomplete renders the autocomplete suggestion bar.
+func (m *tuiModel) renderAutocomplete() string {
+	var parts []string
+	for i, s := range m.autocomplete.suggestions {
+		styled := s
+		if i == m.autocomplete.selected {
+			styled = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("0")).
+				Background(lipgloss.Color("6")).
+				Padding(0, 1).
+				Render(s)
+		} else {
+			styled = dimStyle.Render(s)
+		}
+		parts = append(parts, styled)
+	}
+	return "  " + strings.Join(parts, dimStyle.Render(" │ ")) + "\n"
 }
 
 func (m *tuiModel) rebuildOutput() {
@@ -676,10 +960,17 @@ func (m *tuiModel) renderCommand(line string) {
 		cmdName = parts[0]
 	}
 
-	// Rebuild from history when thinking-detail is toggled, so past
-	// reasoning blocks retroactively expand/collapse in-place.
-	if strings.HasPrefix(cmd, "config thinking-detail") {
+	// Commands that replace the agent's history must also rebuild the TUI
+	// committed lines from scratch, so the loaded/new-session messages appear
+	// and old messages are cleared.
+	switch cmdName {
+	case "resume", "new-session":
+		m.bannerSeed = bannerLines(m.agent)
 		m.rebuildOutput()
+	case "config":
+		if strings.HasPrefix(cmd, "config thinking-detail") {
+			m.rebuildOutput()
+		}
 	}
 
 	// Echo the typed command as a user prompt, same as a normal message.
