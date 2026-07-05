@@ -21,6 +21,7 @@ type sessionConfig struct {
 	AutoEdit       *bool   `json:"auto_edit,omitempty"`
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
+	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
 }
 
 // sessionFile is the top-level JSON structure stored in a session file.

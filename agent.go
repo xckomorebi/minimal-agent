@@ -139,6 +139,16 @@ func (a *agent) thinkingEffort() shared.ReasoningEffort {
 	return shared.ReasoningEffortMedium
 }
 
+func (a *agent) thinkingDetail() bool {
+	if a.config.ThinkingDetail != nil {
+		return *a.config.ThinkingDetail
+	}
+	if c := readGlobalCfg(); c != nil && c.ThinkingDetail != nil {
+		return *c.ThinkingDetail
+	}
+	return false
+}
+
 func effortString(e shared.ReasoningEffort) string {
 	switch e {
 	case shared.ReasoningEffortLow:

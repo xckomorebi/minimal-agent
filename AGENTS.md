@@ -19,6 +19,8 @@ this way unless there is a compelling reason.
 | `session.go` | Session load/save/list, auto-resume, `printHistory` |
 | `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, `externalTools` placeholder, implementations (bash, read, write, edit, web-search, web-fetch) |
 | `ui.go` | ANSI helpers, banner, diff printing |
+| `tui.go` | Bubble Tea TUI model, viewport, streaming display |
+| `styles.go` | Lipgloss styles, markdown rendering, diff rendering |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
 - **Agent loop**: read user input → append to history → stream response →
@@ -27,7 +29,7 @@ this way unless there is a compelling reason.
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
-  API key, base URL, model, thinking, effort level, auto-edit
+  API key, base URL, model, thinking, effort level, thinking detail, auto-edit
 
 ## Coding conventions
 
@@ -62,11 +64,16 @@ Settings configurable via `~/.ma/settings.json`:
   "model": "gpt-4o",
   "thinking": true,
   "thinking_effort": "medium",
+  "thinking_detail": false,
   "auto_edit": false
 }
 ```
 
 All keys are optional — unset keys fall through to the next priority level.
+
+- `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
+  window and collapses to "thought about it" when done. When `true`, the full
+  thinking text is expanded in the output.
 
 Tests are not yet present. When adding tests, use the standard library `testing`
 package and place them in `main_test.go`.

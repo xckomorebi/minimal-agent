@@ -96,8 +96,9 @@ func (a *agent) handleConfigStr(args []string) string {
 		auto := onOff(a.autoEdit())
 		think := onOff(a.thinking())
 		effort := effortString(a.thinkingEffort())
-		return fmt.Sprintf("model     : %s %s\nauto-edit : %s\nthinking  : %s\neffort    : %s",
-			model, src, auto, think, effort)
+		detail := onOff(a.thinkingDetail())
+		return fmt.Sprintf("model     : %s %s\nauto-edit : %s\nthinking  : %s\neffort    : %s\ndetail    : %s",
+			model, src, auto, think, effort, detail)
 	}
 	switch args[0] {
 	case "model":
@@ -129,8 +130,13 @@ func (a *agent) handleConfigStr(args []string) string {
 		a.config.ThinkingEffort = &level
 		a.sessionDirty = true
 		return "thinking-effort: " + level
+	case "thinking-detail":
+		v := !a.thinkingDetail()
+		a.config.ThinkingDetail = &v
+		a.sessionDirty = true
+		return "thinking-detail: " + onOff(v)
 	default:
-		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort"
+		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail"
 	}
 }
 

@@ -21,6 +21,7 @@ type globalConfig struct {
 	Model          *string `json:"model,omitempty"`
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
+	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
 	AutoEdit       *bool   `json:"auto_edit,omitempty"`
 }
 
