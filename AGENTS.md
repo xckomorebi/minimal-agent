@@ -48,7 +48,7 @@ MA_API_KEY=sk-... ./minimal-agent
 
 ## Configuration priority (highest to lowest)
 
-1. CLI flags (`-ma-api-key`, `-url`, `-model`)
+1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-session`, `-new`)
 2. Session config (`/config` commands, stored in `.ma-sessions/<name>.json`)
 3. Global config file (`~/.ma/settings.json`, JSON, watched via fsnotify)
 4. Environment variables (`MA_API_KEY`, `MA_BASE_URL`, `MA_MODEL`)

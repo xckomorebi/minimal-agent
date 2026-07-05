@@ -33,6 +33,11 @@ Priority (highest to lowest): **CLI flags > session config > `~/.ma/settings.jso
 | `-ma-api-key` | `MA_API_KEY`  | (required)                  |
 | `-url`        | `MA_BASE_URL` | `https://api.openai.com/v1` |
 | `-model`      | `MA_MODEL`    | `gpt-4o`                    |
+| `-session`    | `MA_SESSION`  | auto-resume latest          |
+| `-new`        | —             | `false`                     |
+
+`-session` selects a named session to load or create. `-new` forces a fresh
+timestamped session, ignoring any existing sessions or `-session` flag.
 
 ### Global config file (`~/.ma/settings.json`)
 
@@ -68,7 +73,8 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
 
 ## How it works
 
-1. Read a line from stdin, append it to the conversation as a user message.
+1. Read input from stdin (supporting `\` line continuation for multi-line
+   input), append it to the conversation as a user message.
 2. POST the history + tool schemas to `/chat/completions` with streaming.
 3. Print the assistant text as it arrives; for each `tool_calls` entry, run the
    tool and feed a `role: "tool"` message back.

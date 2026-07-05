@@ -115,6 +115,7 @@ func main() {
 	baseURLFlag := flag.String("url", "", "API base URL")
 	modelFlag := flag.String("model", "", "model id")
 	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
+	newFlag := flag.Bool("new", false, "start a new session instead of auto-resuming")
 	flag.Parse()
 
 	globalMu.Lock()
@@ -174,6 +175,9 @@ func main() {
 	}
 
 	loaded := false
+	if *newFlag {
+		a.sessionName = "" // force fresh timestamped session
+	}
 	if a.sessionName == "" {
 		a.sessionName = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
 	} else if err := a.loadSession(a.sessionName); err != nil {
