@@ -234,7 +234,6 @@ func bannerLines(a *agent) []string {
 		Render(body)
 
 	lines := strings.Split(box, "\n")
-	lines = append(lines, dimStyle.Render("Ctrl-C to quit · ↑↓ to scroll"))
 	return lines
 }
 
