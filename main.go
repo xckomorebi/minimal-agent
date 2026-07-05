@@ -14,7 +14,7 @@
 // Run:
 //
 //	export MA_API_KEY=sk-...
-//	go run .            # then type a request, Ctrl-D / "exit" to quit
+//	go run .            # then type a request, Ctrl-C to quit
 package main
 
 import (
@@ -405,6 +405,37 @@ func red(s string) string {
 	return "\033[31m" + s + "\033[0m"
 }
 
+// banner prints a startup banner with model, session name, and quit hint.
+func banner(model, session string) {
+	lines := []string{
+		"minimal-agent",
+		"model   : " + model,
+		"session : " + session,
+		"Ctrl-C to quit",
+	}
+
+	width := 0
+	for _, l := range lines {
+		if len(l) > width {
+			width = len(l)
+		}
+	}
+	width += 4 // padding: "  " on each side
+
+	pad := func(s string) string {
+		return "  " + s + strings.Repeat(" ", width-2-len(s))
+	}
+
+	top := "╭" + strings.Repeat("─", width) + "╮"
+	btm := "╰" + strings.Repeat("─", width) + "╯"
+
+	fmt.Println("\n" + top)
+	for _, l := range lines {
+		fmt.Println("│" + pad(l) + "│")
+	}
+	fmt.Println(btm)
+}
+
 // runTool dispatches a single tool call to its handler and returns a tool result.
 func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	switch call.Function.Name {
@@ -654,16 +685,21 @@ func main() {
 	}
 
 	// Try to load the requested session; if it fails, start fresh.
+	loaded := false
 	if a.sessionName == "" {
 		// No session to load — start a fresh one.
 		a.sessionName = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
 	} else if err := a.loadSession(a.sessionName); err != nil {
 		// Session file gone or corrupt — start fresh under the same name.
 	} else {
-		a.printHistory()
+		loaded = true
 	}
 
-	fmt.Printf("minimal agent (model=%s, url=%s, session=%s, thinking=medium)\nType a request; Ctrl-D or \"exit\" to quit.\n", a.model, url, a.sessionName)
+	// Banner — printed before history so it acts as a header.
+	banner(a.model, a.sessionName)
+	if loaded {
+		a.printHistory()
+	}
 
 	// Catch SIGINT (Ctrl-C) and save before exiting.
 	sigCh := make(chan os.Signal, 1)
@@ -685,10 +721,6 @@ func main() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
-		}
-		if line == "exit" || line == "quit" {
-			a.autoSave()
-			break
 		}
 
 		// Session commands (prefixed with "/")
