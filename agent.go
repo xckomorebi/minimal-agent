@@ -28,14 +28,20 @@ type agent struct {
 	// history, keyed by the message's index in the history slice. Reasoning is
 	// never persisted (API rejects it as input), but kept in memory so features
 	// like "show thinking detail" can expand collapsed blocks.
-	reasonings    map[int]string
-	reasoningAcc  string // accumulator during streaming
+	reasonings   map[int]string
+	reasoningAcc string // accumulator during streaming
 
 	// fileMtimes tracks the on-disk modification time of each file at the moment
 	// this agent last read or wrote it (keyed by absolute path). The edit tool
 	// uses it to refuse edits to files it hasn't seen, or that changed on disk
 	// since it last saw them, so it never clobbers an unseen external change.
 	fileMtimes map[string]time.Time
+
+	// summary is a brief one-line description of the session, generated
+	// asynchronously after the first user message.
+	summary string
+	// summaryGenerated prevents duplicate async summary generation.
+	summaryGenerated bool
 }
 
 // rememberFile records the file's current on-disk mtime as the version this
@@ -479,4 +485,50 @@ func extractReasoning(raw string) string {
 		return ""
 	}
 	return chunk.Choices[0].Delta.ReasoningContent
+}
+
+// generateSessionSummary makes a non-streaming LLM call to produce a brief
+// one-line summary from the given user text. It runs asynchronously and
+// persists the result to the session file. userText is passed in explicitly to
+// avoid reading a.history from a concurrent goroutine.
+func (a *agent) generateSessionSummary(userText string) {
+	if userText == "" {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	params := openai.ChatCompletionNewParams{
+		Model: openai.ChatModel(a.effectiveModel()),
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage("You are minimal-agent, a coding assistant. Your task here is to generate a short summary that will be used as the title for a coding session. Given the user's first message, produce a brief one-line summary (max 80 characters) of what the session is about. Be specific: mention the language, framework, or task. Return only the summary text, no quotes or prefix."),
+			openai.UserMessage("Summarize the following user message into a session title:\n\n" + userText),
+		},
+		MaxTokens: openai.Int(60),
+	}
+	// The summary is a trivial one-liner; explicitly disable thinking so no
+	// reasoning budget is spent on it.
+	params.SetExtraFields(map[string]any{
+		"thinking": map[string]any{"type": "disabled"},
+	})
+
+	completion, err := a.client.Chat.Completions.New(ctx, params)
+	if err != nil {
+		return // silently fail; summary is a best-effort feature
+	}
+	if len(completion.Choices) == 0 {
+		return
+	}
+	summary := strings.TrimSpace(completion.Choices[0].Message.Content)
+	if summary == "" {
+		return
+	}
+	// Truncate if the model ignored the limit.
+	if len(summary) > 120 {
+		summary = summary[:120]
+	}
+	a.summary = summary
+	a.sessionDirty = true
+	a.autoSave()
 }

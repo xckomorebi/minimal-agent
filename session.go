@@ -28,6 +28,7 @@ type sessionConfig struct {
 type sessionFile struct {
 	Config  sessionConfig                            `json:"config"`
 	History []openai.ChatCompletionMessageParamUnion `json:"history"`
+	Summary string                                  `json:"summary,omitempty"`
 }
 
 // sessionPath returns the file path for a given session name.
@@ -43,6 +44,7 @@ func (a *agent) saveSession() error {
 	sf := sessionFile{
 		Config:  a.config,
 		History: a.history,
+		Summary: a.summary,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -74,6 +76,10 @@ func (a *agent) loadSession(name string) error {
 		}
 		a.sessionName = name
 		a.sessionDirty = false
+		a.summary = sf.Summary
+		if a.summary != "" {
+			a.summaryGenerated = true
+		}
 		return nil
 	}
 
@@ -153,4 +159,18 @@ func (a *agent) autoSave() {
 	if err := a.saveSession(); err != nil {
 		fmt.Fprintln(os.Stderr, "auto-save failed:", err)
 	}
+}
+
+// sessionSummary reads just the summary field from a session file.
+// Returns an empty string if no summary is set or the file can't be read.
+func sessionSummary(name string) string {
+	data, err := os.ReadFile(sessionPath(name))
+	if err != nil {
+		return ""
+	}
+	var sf sessionFile
+	if err := json.Unmarshal(data, &sf); err != nil {
+		return ""
+	}
+	return sf.Summary
 }

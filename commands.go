@@ -36,6 +36,8 @@ func (a *agent) handleCommandStr(cmd string) string {
 		if err := a.loadSession(name); err != nil {
 			return "load error: " + err.Error()
 		}
+		a.reasonings = nil
+		a.fileMtimes = nil
 		return fmt.Sprintf("loaded %q (%d messages)", name, len(a.history))
 	case "new-session":
 		name := ""
@@ -50,6 +52,10 @@ func (a *agent) handleCommandStr(cmd string) string {
 		}
 		a.sessionName = name
 		a.sessionDirty = true
+		a.summary = ""
+		a.summaryGenerated = false
+		a.reasonings = nil
+		a.fileMtimes = nil
 		return fmt.Sprintf("new session %q", name)
 	case "list-session":
 		names, err := listSessions()
@@ -62,15 +68,33 @@ func (a *agent) handleCommandStr(cmd string) string {
 		var b strings.Builder
 		for i, n := range names {
 			if i > 0 {
-				b.WriteString(", ")
+				b.WriteString("\n")
 			}
 			if n == a.sessionName {
 				b.WriteString("*" + n)
 			} else {
 				b.WriteString(n)
 			}
+			if s := sessionSummary(n); s != "" {
+				b.WriteString(" ‒ " + s)
+			}
 		}
 		return b.String()
+	case "re-summarize":
+		a.summaryGenerated = false
+		// Find the first user message to pass as a prompt.
+		var userText string
+		for _, m := range a.history {
+			if m.OfUser != nil {
+				userText = m.OfUser.Content.OfString.Value
+				break
+			}
+		}
+		a.generateSessionSummary(userText)
+		if a.summary == "" {
+			return "could not generate summary (no user message yet?)"
+		}
+		return "summary: " + a.summary
 	case "config":
 		return a.handleConfigStr(parts[1:])
 	default:
@@ -230,7 +254,7 @@ func autocompleteCommand(input string, cursorPos int) []string {
 
 // commandNames returns all slash command names.
 func commandNames() []string {
-	return []string{"save", "resume", "new-session", "list-session", "config"}
+	return []string{"save", "resume", "new-session", "list-session", "config", "re-summarize"}
 }
 
 // autocompleteConfigArg handles autocomplete for /config subcommands.

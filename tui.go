@@ -48,6 +48,7 @@ type autocompleteState struct {
 type pickerItem struct {
 	name    string
 	current bool // is this the current session?
+	summary string // brief one-line summary
 }
 
 type pickerState struct {
@@ -294,6 +295,7 @@ func (m *tuiModel) openSessionPicker() {
 		items[i] = pickerItem{
 			name:    n,
 			current: n == m.agent.sessionName,
+			summary: sessionSummary(n),
 		}
 	}
 	m.picker = pickerState{
@@ -534,6 +536,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			m.agent.history = append(m.agent.history, userMessage(line))
 			m.agent.sessionDirty = true
+
+			// Generate a session summary asynchronously on the first user message.
+			if !m.agent.summaryGenerated {
+				m.agent.summaryGenerated = true
+				go m.agent.generateSessionSummary(line)
+			}
 
 			go m.agent.doTurn(m.ctx)
 			return m, waitForMsg(m.msgCh)
@@ -829,14 +837,18 @@ func (m tuiModel) View() string {
 
 // renderPicker renders the session picker popup as a bordered box.
 func (m *tuiModel) renderPicker() string {
-	// Determine box width: longest name + padding.
-	maxName := 0
+	// Determine box width: longest name + summary + padding.
+	maxLine := 0
 	for _, it := range m.picker.items {
-		if len(it.name) > maxName {
-			maxName = len(it.name)
+		lineLen := len(it.name)
+		if it.summary != "" {
+			lineLen += 3 + len(it.summary) // " ‒ summary"
+		}
+		if lineLen > maxLine {
+			maxLine = lineLen
 		}
 	}
-	boxWidth := min(maxName+12, m.width-4)
+	boxWidth := min(maxLine+8, m.width-4)
 	if boxWidth < 24 {
 		boxWidth = 24
 	}
@@ -856,6 +868,9 @@ func (m *tuiModel) renderPicker() string {
 		label := it.name
 		if it.current {
 			label = lipgloss.NewStyle().Underline(true).Render(label)
+		}
+		if it.summary != "" {
+			label += dimStyle.Render(" ‒ " + it.summary)
 		}
 		line := marker + label
 		// Pad to innerWidth.
