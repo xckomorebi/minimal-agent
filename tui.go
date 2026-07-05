@@ -90,6 +90,10 @@ const (
 	roleCommand      = "command"
 )
 
+// bottomPad is the number of blank lines kept below the newest message so it
+// isn't glued to the input box and there's a little room to scroll past it.
+const bottomPad = 4
+
 // spacerGap returns the number of blank lines between two roles.
 func spacerGap(prev, cur string) int {
 	if prev == cur {
@@ -138,11 +142,18 @@ func bannerToCommitted(lines []string) []committedLine {
 func newTUIModel(a *agent) tuiModel {
 	ta := textarea.New()
 	ta.Placeholder = "type a message or /command..."
+	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Faint(true).Italic(true)
+	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Faint(true).Italic(true)
 	ta.SetPromptFunc(2, func(lineIdx int) string {
-		return "│ "
+		if lineIdx == 0 {
+			return "▎ "
+		}
+		return "  "
 	})
-	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(lipgloss.Color("8"))
+	ta.FocusedStyle.Text = lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
 	ta.MaxHeight = 10
@@ -195,6 +206,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.Width = max(1, msg.Width-4)
 		m.textarea.SetWidth(max(1, msg.Width-4))
+		// Size the viewport height now so GotoBottom in rebuildOutput uses
+		// the real height, not the placeholder 20.
+		taHeight := min(max(1, m.textarea.LineInfo().Height), 10)
+		taHeight = min(taHeight, max(1, msg.Height-2))
+		m.viewport.Height = max(1, msg.Height-2-taHeight)
 		m.rebuildOutput()
 		return m, nil
 
@@ -236,8 +252,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// Arrow keys: scroll viewport (always, even during streaming).
-		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown {
+		// Arrow keys, page up/down, home/end: scroll viewport (always, even during streaming).
+		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown ||
+			msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
+			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd {
 			var cmd tea.Cmd
 			m.viewport, cmd = m.viewport.Update(msg)
 			return m, cmd
@@ -248,6 +266,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 			m.agent.autoSave()
 			return m, tea.Quit
+
+		case tea.KeyCtrlO:
+			v := !m.agent.thinkingDetail()
+			m.agent.config.ThinkingDetail = &v
+			m.agent.sessionDirty = true
+			m.rebuildOutput()
+			return m, nil
 
 		case tea.KeyEnter:
 			if m.agentRunning {
@@ -267,6 +292,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// User message.
 			m.commitUser(line)
 			m.updateViewportContent()
+			// Submitting always jumps to the bottom so the new turn is followed,
+			// even if the user was scrolled up reading history.
+			m.viewport.GotoBottom()
 
 			m.agentRunning = true
 			m.thinkingActive = false
@@ -311,7 +339,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case contentMsg:
 		if m.thinkingActive {
 			m.thinkingActive = false
-			m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
+			if m.agent.thinkingDetail() {
+				m.commitThinkingDetail(m.thinkingBuf)
+			} else {
+				m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
+			}
 			m.thinkingBuf = ""
 			m.streamingLine = ""
 			m.streamingKind = ""
@@ -395,7 +427,11 @@ func (m *tuiModel) flushStreaming() {
 	case "content":
 		m.commitAgent(m.streamingLine)
 	case "reasoning":
-		m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
+		if m.agent.thinkingDetail() {
+			m.commitThinkingDetail(m.thinkingBuf)
+		} else {
+			m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
+		}
 		m.thinkingBuf = ""
 		m.thinkingActive = false
 	}
@@ -446,7 +482,12 @@ func (m *tuiModel) updateViewportContent() {
 			if wrapWidth < 20 {
 				wrapWidth = 80
 			}
-			for i, ln := range wordWrap(m.streamingLine, wrapWidth) {
+			wrapped := wordWrap(m.streamingLine, wrapWidth)
+			// Rolling window: only show last 10 lines in default mode.
+			if !m.agent.thinkingDetail() && len(wrapped) > 10 {
+				wrapped = wrapped[len(wrapped)-10:]
+			}
+			for i, ln := range wrapped {
 				if i == 0 {
 					lines = append(lines, prefix+reasonStyle.Render(ln))
 				} else {
@@ -473,9 +514,24 @@ func (m *tuiModel) updateViewportContent() {
 		}
 	}
 
+	// Sticky bottom: was the user parked at the bottom *before* we change the
+	// content? Capture it first, because SetContent (adding a streamed line)
+	// makes the old offset no longer the bottom. Only re-pin to the bottom if
+	// they were already there; if they've scrolled up to read history we never
+	// touch the viewport, so their position is left exactly alone. When they
+	// scroll back down to the bottom, AtBottom() becomes true again and follow
+	// resumes on the next frame.
+	wasAtBottom := m.viewport.AtBottom()
+
 	content := strings.Join(lines, "\n")
+	// A few blank lines below the newest content so it isn't glued to the input
+	// box and there's a little room to scroll past it.
+	content += strings.Repeat("\n", bottomPad)
 	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
+
+	if wasAtBottom {
+		m.viewport.GotoBottom()
+	}
 }
 
 func (m tuiModel) View() string {
@@ -491,11 +547,15 @@ func (m tuiModel) View() string {
 	taHeight := min(max(1, m.textarea.LineInfo().Height), 10)
 	taHeight = min(taHeight, max(1, m.height-2))
 	m.textarea.SetHeight(taHeight)
-	m.viewport.Height = max(1, m.height-1-taHeight) // separator + textarea
+	m.viewport.Height = max(1, m.height-2-taHeight) // hint + separator + textarea
 
 	var b strings.Builder
 
 	b.WriteString(m.viewport.View())
+	b.WriteString("\n")
+
+	// Key hints, right above the separator line.
+	b.WriteString(dimStyle.Render("Ctrl-C quit · Ctrl-O toggle thinking · ↑↓ scroll"))
 	b.WriteString("\n")
 
 	// Separator.
@@ -517,11 +577,19 @@ func (m tuiModel) View() string {
 func (m *tuiModel) rebuildOutput() {
 	m.committed = bannerToCommitted(m.bannerSeed)
 	toolCallNames := map[string]string{} // tool call ID → name
-	for _, msg := range m.agent.history {
+	for i, msg := range m.agent.history {
 		if msg.OfUser != nil {
 			m.commitUser(msg.OfUser.Content.OfString.Value)
 		}
 		if msg.OfAssistant != nil {
+			// If the agent was thinking before this message, render it.
+			if reasoning, ok := m.agent.reasonings[i]; ok {
+				if m.agent.thinkingDetail() {
+					m.commitThinkingDetail(reasoning)
+				} else {
+					m.push(roleAgent, renderCollapsedThinking(reasoning))
+				}
+			}
 			// Show tool calls with brief detail.
 			if len(msg.OfAssistant.ToolCalls) > 0 {
 				for _, tc := range msg.OfAssistant.ToolCalls {
@@ -558,9 +626,6 @@ func (m *tuiModel) rebuildOutput() {
 // --- command rendering ---
 
 func (m *tuiModel) renderCommand(line string) {
-	// Echo the typed command as a user prompt, same as a normal message.
-	m.commitUser(line)
-
 	cmd := strings.TrimPrefix(line, "/")
 	result := m.agent.handleCommandStr(cmd)
 
@@ -569,6 +634,15 @@ func (m *tuiModel) renderCommand(line string) {
 	if len(parts) > 0 {
 		cmdName = parts[0]
 	}
+
+	// Rebuild from history when thinking-detail is toggled, so past
+	// reasoning blocks retroactively expand/collapse in-place.
+	if strings.HasPrefix(cmd, "config thinking-detail") {
+		m.rebuildOutput()
+	}
+
+	// Echo the typed command as a user prompt, same as a normal message.
+	m.commitUser(line)
 
 	for _, ln := range strings.Split(result, "\n") {
 		if ln == "" {
@@ -631,6 +705,23 @@ func (m *tuiModel) commitAgent(text string) {
 			m.push(roleAgent, agentStyle.Render(prefix)+line)
 		} else {
 			m.push(roleAgent, indent+line)
+		}
+	}
+}
+
+func (m *tuiModel) commitThinkingDetail(text string) {
+	prefix := thinkStyle.Render("✦") + " "
+	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+	cw := m.contentWidth()
+	wrapWidth := cw - lipgloss.Width(prefix)
+	if wrapWidth < 20 {
+		wrapWidth = 80
+	}
+	for i, line := range wordWrap(text, wrapWidth) {
+		if i == 0 {
+			m.push(roleAgent, prefix+reasonStyle.Render(line))
+		} else {
+			m.push(roleAgent, indent+reasonStyle.Render(line))
 		}
 	}
 }
