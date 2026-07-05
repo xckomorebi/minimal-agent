@@ -346,14 +346,14 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		return args.RequiresApproval, name, detail
 	case "write":
 		name = "write"
-		detail = fmt.Sprintf("%s (%d bytes)", args.Path, len(args.Content))
+		detail = fmt.Sprintf("%s (%d bytes)", relPath(args.Path), len(args.Content))
 		return !a.autoEdit(), name, detail
 	case "edit":
 		name = "edit"
-		detail = args.Path
+		detail = relPath(args.Path)
 		return !a.autoEdit(), name, detail
 	case "read":
-		return false, "read", args.Path
+		return false, "read", relPath(args.Path)
 	case "web-search":
 		return false, "web-search", args.Query
 	case "web-fetch":
@@ -449,6 +449,19 @@ func (a *agent) appendCancelledResults(calls []openai.ChatCompletionMessageToolC
 // userMessage creates a user message for the given line.
 func userMessage(line string) openai.ChatCompletionMessageParamUnion {
 	return openai.UserMessage(line)
+}
+
+// relPath converts an absolute path to a cwd-relative path if it's under cwd.
+func relPath(p string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return p
+	}
+	rel, err := filepath.Rel(cwd, p)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		return p
+	}
+	return rel
 }
 
 func extractReasoning(raw string) string {

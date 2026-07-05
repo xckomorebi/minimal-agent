@@ -596,7 +596,7 @@ func (m tuiModel) View() string {
 	if m.agent.thinkingDetail() {
 		thinkingLabel = "hide thinking"
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("Ctrl-C %s · Ctrl-O %s · ↑↓ scroll", ctrlCLabel, thinkingLabel)))
+	b.WriteString(dimStyle.Render(fmt.Sprintf("Ctrl-C %s · Ctrl-O %s · %s · ↑↓ scroll", ctrlCLabel, thinkingLabel, m.agent.effectiveModel())))
 	b.WriteString("\n")
 
 	// Separator.

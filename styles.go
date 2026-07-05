@@ -447,9 +447,9 @@ func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 	case "bash":
 		return "$ " + args.Command
 	case "write":
-		return fmt.Sprintf("%s (%d bytes)", args.Path, len(args.Content))
+		return fmt.Sprintf("%s (%d bytes)", relPath(args.Path), len(args.Content))
 	case "edit", "read":
-		return args.Path
+		return relPath(args.Path)
 	case "web-search":
 		return args.Query
 	case "web-fetch":
