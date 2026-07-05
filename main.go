@@ -1,9 +1,9 @@
 // A minimal, runnable agent: an OpenAI Chat Completions tool-calling loop with
-// `bash`, `read`, and `write` tools, built on the official openai-go SDK.
+// `bash`, `read`, `write`, and `edit` tools, built on the official openai-go SDK.
 //
 // Responses are streamed over SSE. Commands that change state require interactive
-// approval: `write` always prompts, and `bash` prompts when the model sets its
-// `requires_approval` parameter. `read` never prompts.
+// approval: `write` and `edit` always prompt, and `bash` prompts when the model
+// sets its `requires_approval` parameter. `read` never prompts.
 //
 // Configuration (flags override environment):
 //
@@ -98,6 +98,8 @@ func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCo
 		return a.readFile(call)
 	case "write":
 		return a.writeFile(call)
+	case "edit":
+		return a.editFile(call)
 	default:
 		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID)
 	}
@@ -172,6 +174,57 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.Chat
 	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID)
 }
 
+// editFile replaces an exact, unique occurrence of old_string with new_string in
+// an existing file. If old_string is missing or matches more than once, it returns
+// an error so the model can re-read and retry with more context. Always prompts.
+func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	var args struct {
+		Path      string `json:"path"`
+		OldString string `json:"old_string"`
+		NewString string `json:"new_string"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" || args.OldString == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID)
+	}
+
+	data, err := os.ReadFile(args.Path)
+	if err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	content := string(data)
+
+	switch strings.Count(content, args.OldString) {
+	case 1: // the unique match we require
+	case 0:
+		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID)
+	default:
+		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID)
+	}
+
+	fmt.Println("\n  edit " + args.Path)
+	printDiff(args.OldString, args.NewString)
+	if !a.approve() {
+		fmt.Println("  (denied)")
+		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID)
+	}
+
+	updated := strings.Replace(content, args.OldString, args.NewString, 1)
+	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil {
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
+	}
+	return openai.ToolMessage("edited "+args.Path, call.ID)
+}
+
+// printDiff shows the removed and added lines of an edit for the approval prompt.
+func printDiff(oldString, newString string) {
+	for line := range strings.SplitSeq(oldString, "\n") {
+		fmt.Println("  - " + line)
+	}
+	for line := range strings.SplitSeq(newString, "\n") {
+		fmt.Println("  + " + line)
+	}
+}
+
 // approve asks the user to confirm the pending command. Anything other than an
 // explicit yes (including EOF) is treated as a denial.
 func (a *agent) approve() bool {
@@ -223,13 +276,18 @@ func main() {
 			toolDef("read", "Read and return the full contents of a file at the given path.",
 				prop("path", "string", "path to the file to read"),
 			),
-			toolDef("write", "Write (creating or overwriting) a file with the given content. Always prompts the user for approval.",
+			toolDef("write", "Write (creating or overwriting) a file with the given content. Use this for new files; use edit to modify an existing file. Always prompts the user for approval.",
 				prop("path", "string", "path to the file to write"),
 				prop("content", "string", "the full content to write to the file"),
 			),
+			toolDef("edit", "Modify an existing file by replacing an exact, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unique. Always prompts the user for approval.",
+				prop("path", "string", "path to the file to edit"),
+				prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
+				prop("new_string", "string", "the replacement text"),
+			),
 		},
 		history: []openai.ChatCompletionMessageParamUnion{
-			openai.SystemMessage("You are a concise CLI coding agent. Use the bash, read, and write tools to inspect and act on the system. Keep answers short."),
+			openai.SystemMessage("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short."),
 		},
 	}
 
