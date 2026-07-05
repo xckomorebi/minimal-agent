@@ -357,20 +357,21 @@ func (a *agent) doTurn(ctx context.Context) {
 
 			result, toolDenied := a.runToolCall(ctx, call)
 			a.history = append(a.history, result)
+			if toolDenied {
+				denied = true
+			}
 
 			// Extract result text for display (skip "read" and "skill" — too verbose).
 			if call.Function.Name != "read" && call.Function.Name != "skill" {
 				resultText := a.toolResultText(result)
 				a.sendDisplay(toolResultDisplayMsg{result: resultText})
 			}
-
-			if toolDenied {
-				denied = true
-			}
 		}
-		// If tools were denied, loop again so the LLM sees the denial
-		// and can try an alternative approach. Otherwise the turn is done.
-		if !denied {
+		// A denial ends the turn: the user rejected the action, so stop rather
+		// than bounce the denial back to the model to retry. If all tool calls
+		// succeeded, loop so the model sees the results and continues. (The turn
+		// also ends above when the model returns no tool calls.)
+		if denied {
 			a.sendCritical(turnDoneMsg{})
 			return
 		}
