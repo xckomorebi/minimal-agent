@@ -51,7 +51,7 @@ func init() {
 		"re-summarize": {
 			name:        "re-summarize",
 			description: "regenerate the session summary",
-			detail:      "re-summarize — re-generate the short one-line summary used as the session title. Uses the first user message.",
+			detail:      "re-summarize — re-generate the short one-line summary used as the session title. Uses all user messages to capture the full conversation context.",
 			handler:     cmdReSummarize,
 		},
 		"config": {
@@ -189,17 +189,20 @@ func cmdListSession(a *agent, parts []string) string {
 
 func cmdReSummarize(a *agent, parts []string) string {
 	a.summaryGenerated = false
-	// Find the first user message to pass as a prompt.
-	var userText string
+	// Collect all user messages to use as context for the summary.
+	var userMessages []string
 	for _, m := range a.history {
 		if m.OfUser != nil {
-			userText = m.OfUser.Content.OfString.Value
-			break
+			userMessages = append(userMessages, m.OfUser.Content.OfString.Value)
 		}
+	}
+	userText := strings.Join(userMessages, "\n")
+	if userText == "" {
+		return "no user messages yet"
 	}
 	a.generateSessionSummary(userText)
 	if a.summary == "" {
-		return "could not generate summary (no user message yet?)"
+		return "could not generate summary"
 	}
 	return "summary: " + a.summary
 }
