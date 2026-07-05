@@ -337,19 +337,19 @@ func (a *agent) doTurn(ctx context.Context) {
 			}
 
 			if needsApproval {
-				respondCh := make(chan bool, 1)
+				respondCh := make(chan approvalAnswer, 1)
 				a.sendCritical(approvalReqMsg{name: toolName, detail: toolDetail, respond: respondCh})
-				var approved bool
+				var answer approvalAnswer
 				select {
-				case approved = <-respondCh:
+				case answer = <-respondCh:
 				case <-ctx.Done():
 					a.appendCancelledResults(calls[i:])
 					a.sendCritical(turnErrMsg{ctx.Err()})
 					return
 				}
-				if !approved {
+				if !answer.approved {
 					a.sendDisplay(toolResultDisplayMsg{result: "(denied)"})
-					a.history = append(a.history, toolDeniedMessage(call))
+					a.history = append(a.history, toolDeniedMessage(call, answer.reason))
 					denied = true
 					continue
 				}
@@ -488,7 +488,12 @@ func (a *agent) toolResultText(msg openai.ChatCompletionMessageParamUnion) strin
 }
 
 // toolDeniedMessage creates a tool result for a denied tool call.
-func toolDeniedMessage(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+// If reason is non-empty, it's included in the error message so the LLM
+// can adapt to the user's feedback.
+func toolDeniedMessage(call openai.ChatCompletionMessageToolCall, reason string) openai.ChatCompletionMessageParamUnion {
+	if reason != "" {
+		return openai.ToolMessage("error: the user denied permission: "+reason, call.ID)
+	}
 	return openai.ToolMessage("error: the user denied permission to run this command", call.ID)
 }
 

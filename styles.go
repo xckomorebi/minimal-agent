@@ -437,7 +437,7 @@ func renderOK(msg string) string {
 }
 
 func renderApproval(name, detail string) string {
-	return approvalStyle.Render("run "+name+"?") + " " + dimStyle.Render(detail) + " [y/N] "
+	return approvalStyle.Render("run "+name+"?") + " " + dimStyle.Render(detail)
 }
 
 func truncateStr(s string, maxLen int) string {

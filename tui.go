@@ -26,10 +26,15 @@ type toolResultDisplayMsg struct {
 type diffDisplayMsg struct {
 	lines []string
 }
+type approvalAnswer struct {
+	approved bool
+	reason   string // non-empty when denied with a custom reason
+}
+
 type approvalReqMsg struct {
 	name    string
 	detail  string
-	respond chan<- bool
+	respond chan<- approvalAnswer
 }
 type turnDoneMsg struct{}
 type turnErrMsg struct{ error }
@@ -91,8 +96,11 @@ type tuiModel struct {
 	starVisible    bool
 
 	// Approval state.
-	waitingApproval bool
-	approvalCh      chan<- bool
+	waitingApproval   bool
+	approvalCh        chan<- approvalAnswer
+	approvalSelected  int    // 0=yes, 1=no, 2=other
+	approvalInput     string // custom denial reason
+	approvalCursorPos int
 
 	// Agent running state.
 	agentRunning bool
@@ -437,7 +445,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// --- Approval mode: y/n/Ctrl-C ---
+		// --- Approval mode: select yes/no/other, type reason, Enter/Ctrl-C ---
 		if m.waitingApproval {
 			switch msg.Type {
 			case tea.KeyCtrlC:
@@ -447,37 +455,130 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.ctx, m.cancel = context.WithCancel(context.Background())
 				if m.approvalCh != nil {
 					select {
-					case m.approvalCh <- false:
+					case m.approvalCh <- approvalAnswer{approved: false}:
 					default:
 					}
 				}
 				m.approvalCh = nil
 				m.updateViewportContent()
 				return m, waitForMsg(m.msgCh)
-			case tea.KeyRunes:
-				switch string(msg.Runes) {
-				case "y", "Y", "yes":
-					m.waitingApproval = false
-					if m.approvalCh != nil {
-						m.approvalCh <- true
-					}
-					m.approvalCh = nil
-					return m, waitForMsg(m.msgCh)
-				case "n", "N", "no":
-					m.waitingApproval = false
-					if m.approvalCh != nil {
-						m.approvalCh <- false
-					}
-					m.approvalCh = nil
-					return m, waitForMsg(m.msgCh)
-				}
-			case tea.KeyEnter, tea.KeyEscape:
+			case tea.KeyEscape:
 				m.waitingApproval = false
 				if m.approvalCh != nil {
-					m.approvalCh <- false
+					m.approvalCh <- approvalAnswer{approved: false}
 				}
 				m.approvalCh = nil
 				return m, waitForMsg(m.msgCh)
+			case tea.KeyUp:
+				if m.approvalSelected > 0 {
+					m.approvalSelected--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDown:
+				if m.approvalSelected < 2 {
+					m.approvalSelected++
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyLeft:
+				if m.approvalSelected == 2 && m.approvalCursorPos > 0 {
+					m.approvalCursorPos--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyRight:
+				if m.approvalSelected == 2 && m.approvalCursorPos < len(m.approvalInput) {
+					m.approvalCursorPos++
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyHome:
+				if m.approvalSelected == 2 {
+					m.approvalCursorPos = 0
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnd:
+				if m.approvalSelected == 2 {
+					m.approvalCursorPos = len(m.approvalInput)
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyEnter:
+				answer := m.selectedApprovalAnswer()
+				m.waitingApproval = false
+				if m.approvalCh != nil {
+					m.approvalCh <- answer
+				}
+				m.approvalCh = nil
+				return m, waitForMsg(m.msgCh)
+			case tea.KeyBackspace:
+				if m.approvalSelected == 2 && len(m.approvalInput) > 0 && m.approvalCursorPos > 0 {
+					m.approvalInput = m.approvalInput[:m.approvalCursorPos-1] + m.approvalInput[m.approvalCursorPos:]
+					m.approvalCursorPos--
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyDelete:
+				if m.approvalSelected == 2 && m.approvalCursorPos < len(m.approvalInput) {
+					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + m.approvalInput[m.approvalCursorPos+1:]
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyRunes:
+				s := string(msg.Runes)
+				// Number keys 1-3: select directly.
+				if m.approvalSelected != 2 && len(s) == 1 && s[0] >= '1' && s[0] <= '3' {
+					idx := int(s[0] - '1')
+					m.approvalSelected = idx
+					if idx < 2 {
+						// Yes or No: submit immediately.
+						answer := m.selectedApprovalAnswer()
+						m.waitingApproval = false
+						if m.approvalCh != nil {
+							m.approvalCh <- answer
+						}
+						m.approvalCh = nil
+						return m, waitForMsg(m.msgCh)
+					}
+					// "Other": select it so they can type.
+					m.updateViewportContent()
+					return m, nil
+				}
+				// y/n shortcuts: submit immediately.
+				if m.approvalSelected != 2 {
+					switch s {
+					case "y", "Y":
+						m.waitingApproval = false
+						if m.approvalCh != nil {
+							m.approvalCh <- approvalAnswer{approved: true}
+						}
+						m.approvalCh = nil
+						return m, waitForMsg(m.msgCh)
+					case "n", "N":
+						m.waitingApproval = false
+						if m.approvalCh != nil {
+							m.approvalCh <- approvalAnswer{approved: false}
+						}
+						m.approvalCh = nil
+						return m, waitForMsg(m.msgCh)
+					}
+				}
+				// Typing into "other" input.
+				if m.approvalSelected == 2 {
+					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + s + m.approvalInput[m.approvalCursorPos:]
+					m.approvalCursorPos += len(s)
+				}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeySpace:
+				if m.approvalSelected == 2 {
+					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + " " + m.approvalInput[m.approvalCursorPos:]
+					m.approvalCursorPos++
+				}
+				m.updateViewportContent()
+				return m, nil
 			}
 			return m, nil
 		}
@@ -779,6 +880,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.flushStreaming()
 		m.waitingApproval = true
 		m.approvalCh = msg.respond
+		m.approvalSelected = 0
+		m.approvalInput = ""
+		m.approvalCursorPos = 0
 		m.push(roleAgent, renderApproval(msg.name, msg.detail))
 		m.updateViewportContent()
 		return m, nil
@@ -839,7 +943,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.thinkingActive || m.agentRunning || m.questionActive {
+		if m.thinkingActive || m.agentRunning || m.questionActive || m.waitingApproval {
 			m.starVisible = !m.starVisible
 		}
 		cmds = append(cmds, tickCmd())
@@ -1018,7 +1122,7 @@ func (m tuiModel) View() string {
 
 	// Input area.
 	if m.waitingApproval {
-		b.WriteString(dimStyle.Render("  press y/N ..."))
+		b.WriteString(m.renderApprovalInput())
 	} else if m.questionActive {
 		b.WriteString(m.renderQuestionInput())
 	} else if m.agentRunning {
@@ -1173,6 +1277,68 @@ func (m *tuiModel) renderQuestionInput() string {
 
 	return b.String()
 }
+// renderApprovalInput renders the approval options and input area.
+func (m *tuiModel) renderApprovalInput() string {
+	var b strings.Builder
+
+	selectStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
+	dimOptStyle := dimStyle
+
+	items := []string{"1. Approve", "2. Deny", "3. Other (deny with reason)"}
+	for i, label := range items {
+		if i == m.approvalSelected {
+			if i == 2 {
+				// "Other" selected: show inline edit with cursor.
+				before := m.approvalInput[:m.approvalCursorPos]
+				at := ""
+				if m.approvalCursorPos < len(m.approvalInput) {
+					at = string(m.approvalInput[m.approvalCursorPos])
+				}
+				after := ""
+				if m.approvalCursorPos+1 < len(m.approvalInput) {
+					after = m.approvalInput[m.approvalCursorPos+1:]
+				}
+				cursorChar := " "
+				if m.starVisible {
+					cursorChar = "▌"
+				}
+				cursor := selectStyle.Render(cursorChar)
+				display := before + cursor + at + after
+				if display == "" {
+					display = cursor
+				}
+				b.WriteString(selectStyle.Render("> 3. deny reason: ") + display)
+			} else {
+				b.WriteString(selectStyle.Render("> " + label))
+			}
+		} else {
+			b.WriteString(dimOptStyle.Render("  " + label))
+		}
+		b.WriteString("\n")
+	}
+
+	if m.approvalSelected == 2 {
+		b.WriteString(dimStyle.Render("  type reason, Enter to submit, Esc to deny without reason"))
+	} else {
+		b.WriteString(dimStyle.Render("  ↑↓ or 1-3 or y/n, Enter to confirm, Esc to deny"))
+	}
+	b.WriteString("\n")
+
+	return b.String()
+}
+
+// selectedApprovalAnswer returns the approval answer based on current state.
+func (m *tuiModel) selectedApprovalAnswer() approvalAnswer {
+	switch m.approvalSelected {
+	case 0:
+		return approvalAnswer{approved: true}
+	case 1:
+		return approvalAnswer{approved: false}
+	default: // 2 = other
+		return approvalAnswer{approved: false, reason: m.approvalInput}
+	}
+}
+
 func (m *tuiModel) renderAutocomplete() string {
 	var parts []string
 	for i, s := range m.autocomplete.suggestions {
