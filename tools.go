@@ -57,11 +57,11 @@ func builtinTools() []openai.ChatCompletionToolParam {
 		toolDef("read", "Read and return the full contents of a file at the given path.",
 			prop("path", "string", "path to the file to read"),
 		),
-		toolDef("write", "Create or overwrite a file with the given content. Use this for new files; prefer edit for modifying existing files.",
+		toolDef("write", "Create or overwrite a file with the given content. Use this for new files; prefer edit for modifying existing files. Creating a new file is unrestricted, but overwriting an existing one follows the same rule as edit: you must already know its current contents (from an earlier read/write/edit this session), and it must not have changed on disk since — otherwise read it again first.",
 			prop("path", "string", "path to the file to write"),
 			prop("content", "string", "the full content to write to the file"),
 		),
-		toolDef("edit", "Modify an existing file by replacing a single, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unambiguous.",
+		toolDef("edit", "Modify an existing file by replacing a single, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unambiguous. Editing only requires that you already know the file's current contents — from reading it earlier this session or from your own prior write/edit; you need not re-read right before each edit. Edit fails only if you have never seen the file, or if it changed on disk since you last saw it (read it again to pick up the new contents).",
 			prop("path", "string", "path to the file to edit"),
 			prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
 			prop("new_string", "string", "the replacement text"),
@@ -124,6 +124,7 @@ func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
+	a.rememberFile(args.Path)
 	if len(data) == 0 {
 		return openai.ToolMessage("(empty file)", call.ID)
 	}
@@ -139,11 +140,20 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) (openai.Cha
 		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID), false
 	}
 
+	// Overwriting an existing file follows the same freshness rule as edit: you
+	// must already know its current contents. Creating a new file is unrestricted.
+	if _, err := os.Stat(args.Path); err == nil {
+		if msg := a.checkFileFresh(args.Path); msg != "" {
+			return openai.ToolMessage(msg, call.ID), false
+		}
+	}
+
 	// Approval is handled by the TUI before this is called.
 
 	if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
+	a.rememberFile(args.Path)
 	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID), false
 }
 
@@ -155,6 +165,10 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.Chat
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" || args.OldString == "" {
 		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID), false
+	}
+
+	if msg := a.checkFileFresh(args.Path); msg != "" {
+		return openai.ToolMessage(msg, call.ID), false
 	}
 
 	data, err := os.ReadFile(args.Path)
@@ -177,6 +191,7 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.Chat
 	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
+	a.rememberFile(args.Path)
 	return openai.ToolMessage("edited "+args.Path, call.ID), false
 }
 

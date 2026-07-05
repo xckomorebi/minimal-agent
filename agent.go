@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -22,6 +23,51 @@ type agent struct {
 	sessionName  string
 	sessionDirty bool
 	msgCh        chan tea.Msg // channel to send events to the TUI
+
+	// fileMtimes tracks the on-disk modification time of each file at the moment
+	// this agent last read or wrote it (keyed by absolute path). The edit tool
+	// uses it to refuse edits to files it hasn't seen, or that changed on disk
+	// since it last saw them, so it never clobbers an unseen external change.
+	fileMtimes map[string]time.Time
+}
+
+// rememberFile records the file's current on-disk mtime as the version this
+// agent has seen. Call after a successful read or write.
+func (a *agent) rememberFile(path string) {
+	key, err := filepath.Abs(path)
+	if err != nil {
+		key = path
+	}
+	info, err := os.Stat(key)
+	if err != nil {
+		return
+	}
+	if a.fileMtimes == nil {
+		a.fileMtimes = map[string]time.Time{}
+	}
+	a.fileMtimes[key] = info.ModTime()
+}
+
+// checkFileFresh verifies the agent has seen the file's current on-disk state,
+// so an edit won't silently overwrite changes it never read. It returns a
+// non-empty error message (for the model) when the file is unseen or stale.
+func (a *agent) checkFileFresh(path string) string {
+	key, err := filepath.Abs(path)
+	if err != nil {
+		key = path
+	}
+	info, err := os.Stat(key)
+	if err != nil {
+		return "error: " + err.Error()
+	}
+	seen, ok := a.fileMtimes[key]
+	if !ok {
+		return "error: you have not read " + path + " yet; read it first so you modify its current contents"
+	}
+	if info.ModTime().After(seen) {
+		return "error: " + path + " has changed on disk since you last read it; read it again before modifying it to avoid overwriting external changes"
+	}
+	return ""
 }
 
 func (a *agent) effectiveModel() string {
