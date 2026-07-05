@@ -16,9 +16,11 @@ rewrite itself.
 ## Run
 
 ```sh
-export MA_API_KEY=sk-...
 go run .
 ```
+
+Set your API key in `~/.ma/settings.json` (see [Configuration](#configuration)
+below), or via the `MA_API_KEY` environment variable.
 
 Type a request at the `you>` prompt. `Ctrl-D`, `exit`, or `quit` to leave.
 
@@ -94,4 +96,15 @@ turns for the life of the process.
 
 ## Roadmap
 
-See [TODO.md](TODO.md) for planned features.
+Tracked in [TODO.md](TODO.md). Current status:
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | Editing experience — diff before edit + undo | Diff display ✓, undo ✗ |
+| 2 | UI improvement — syntax highlighting, spinner | ✗ |
+| 3 | Session history — save/reload conversations | ✓ |
+| 4 | External tools — user-defined scripts / web APIs | ✗ |
+| 5 | Skills — reusable prompt templates | ✗ |
+| 6 | Configuration file — `~/.ma/settings.json` | ✓ |
+| 7 | Auto-approve mode — `-y` flag | ✗ |
+| 8 | Context awareness — `.gitignore` + project detection | ✗ |
