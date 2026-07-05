@@ -37,10 +37,12 @@ func cfgStr(cfg *globalConfig, fn func(*globalConfig) *string) string {
 
 func buildSystemMessage() string {
 	var b strings.Builder
-	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.")
-	b.WriteString("\n")
+	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, and edit tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n")
 	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
-	b.WriteString("Global user configuration is at ~/.ma/settings.json (JSON, watched via fsnotify).\n")
+	b.WriteString("\n")
+	b.WriteString("State-changing operations (write, edit, destructive bash) require user approval before execution. Read-only operations (read, ls, cat, grep, git status) run immediately.\n")
+	b.WriteString("Responses stream token-by-token over SSE. When you need to think through a problem, use reasoning blocks (shown in dim italic to the user) before your final response or tool calls.\n")
+	b.WriteString("Tool call results must always go through openai.ToolMessage(result, call.ID). Sessions auto-save on every turn and on exit.\n")
 	b.WriteString("\n")
 
 	if cwd, err := os.Getwd(); err == nil {
