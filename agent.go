@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/shared"
@@ -150,17 +149,6 @@ func (a *agent) runTurn(ctx context.Context) error {
 
 		msg := acc.Choices[0].Message
 		param := msg.ToParam()
-		// Work around openai-go ToAssistantMessageParam not copying the Type
-		// field (see ChatCompletionMessage.ToAssistantMessageParam). Without
-		// this the tool-call history sent back to the API has "type":"" which
-		// causes the model to silently stop responding after tool results.
-		if param.OfAssistant != nil {
-			for i := range param.OfAssistant.ToolCalls {
-				if param.OfAssistant.ToolCalls[i].Type == "" {
-					param.OfAssistant.ToolCalls[i].Type = "function"
-				}
-			}
-		}
 		a.history = append(a.history, param)
 		a.sessionDirty = true
 
@@ -169,9 +157,9 @@ func (a *agent) runTurn(ctx context.Context) error {
 		}
 		denied := false
 		for _, call := range msg.ToolCalls {
-			result := a.runTool(call)
+			result, toolDenied := a.runTool(call)
 			a.history = append(a.history, result)
-			if result.OfTool != nil && strings.Contains(result.OfTool.Content.OfString.Value, "the user denied permission") {
+			if toolDenied {
 				denied = true
 			}
 		}

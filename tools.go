@@ -77,36 +77,40 @@ func allTools() []openai.ChatCompletionToolParam {
 
 // --- tool dispatch ---
 
-func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+// runTool dispatches a tool call and returns the tool-result message along with
+// a flag indicating whether the user denied permission for the action. The flag
+// is returned explicitly rather than inferred from the message text, since tool
+// results can legitimately contain the denial phrase (e.g. reading this file).
+func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	switch call.Function.Name {
 	case "bash":
 		return a.runBash(call)
 	case "read":
-		return a.readFile(call)
+		return a.readFile(call), false
 	case "write":
 		return a.writeFile(call)
 	case "edit":
 		return a.editFile(call)
 	default:
-		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID)
+		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
 	}
 }
 
 // --- tool implementations ---
 
-func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	var args struct {
 		Command          string `json:"command"`
 		RequiresApproval bool   `json:"requires_approval"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Command == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"command": "..."}`, call.ID)
+		return openai.ToolMessage(`error: invalid tool input; expected {"command": "..."}`, call.ID), false
 	}
 
 	fmt.Println("\n  " + toolDot() + toolLabel("bash") + " $ " + args.Command)
 	if args.RequiresApproval && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
-		return openai.ToolMessage("error: the user denied permission to run this command", call.ID)
+		return openai.ToolMessage("error: the user denied permission to run this command", call.ID), true
 	}
 
 	out, err := exec.Command("bash", "-c", args.Command).CombinedOutput()
@@ -117,7 +121,7 @@ func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) openai.ChatCo
 	if result == "" {
 		result = "(no output)"
 	}
-	return openai.ToolMessage(result, call.ID)
+	return openai.ToolMessage(result, call.ID), false
 }
 
 func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
@@ -139,63 +143,63 @@ func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	return openai.ToolMessage(string(data), call.ID)
 }
 
-func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID)
+		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID), false
 	}
 
 	fmt.Printf("\n  %s%s %s (%d bytes)\n", toolDot(), toolLabel("write"), args.Path, len(args.Content))
 	if !a.autoEdit() && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
-		return openai.ToolMessage("error: the user denied permission to write this file", call.ID)
+		return openai.ToolMessage("error: the user denied permission to write this file", call.ID), true
 	}
 
 	if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID)
+		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
-	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID)
+	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID), false
 }
 
-func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
 	var args struct {
 		Path      string `json:"path"`
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" || args.OldString == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID)
+		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID), false
 	}
 
 	data, err := os.ReadFile(args.Path)
 	if err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID)
+		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
 	content := string(data)
 
 	switch strings.Count(content, args.OldString) {
 	case 1:
 	case 0:
-		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID)
+		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID), false
 	default:
-		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID)
+		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID), false
 	}
 
 	fmt.Println("\n  " + toolDot() + toolLabel("edit") + " " + args.Path)
 	printDiff(content, args.OldString, args.NewString)
 	if !a.autoEdit() && !a.approve() {
 		fmt.Println("  " + red("(denied)"))
-		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID)
+		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID), true
 	}
 
 	updated := strings.Replace(content, args.OldString, args.NewString, 1)
 	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID)
+		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
-	return openai.ToolMessage("edited "+args.Path, call.ID)
+	return openai.ToolMessage("edited "+args.Path, call.ID), false
 }
 
 func printDiff(content, oldString, newString string) {
