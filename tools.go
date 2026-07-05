@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"syscall"
@@ -49,6 +50,81 @@ func toolDef(name, description string, props ...property) openai.ChatCompletionT
 	}
 }
 
+// --- skills ---
+
+// skillEntry is a loaded skill with its frontmatter metadata.
+type skillEntry struct {
+	Name        string
+	Description string
+}
+
+// skillIndex is built at startup by scanning ~/.agents/skills/*/SKILL.md.
+var skillIndex []skillEntry
+
+func skillsDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(".agents", "skills")
+	}
+	return filepath.Join(home, ".agents", "skills")
+}
+
+// buildSkillIndex scans the skills directory and populates the global skillIndex
+// from each SKILL.md's YAML frontmatter. Errors are silent (best-effort).
+func buildSkillIndex() {
+	dir := skillsDir()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	var idx []skillEntry
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
+		if err != nil {
+			continue
+		}
+		se := skillEntry{Name: e.Name()}
+		se.Description = parseSkillFrontmatter(string(data))
+		idx = append(idx, se)
+	}
+	skillIndex = idx
+}
+
+// parseSkillFrontmatter extracts the "description" field from YAML frontmatter
+// between the first two "---" lines. Returns empty string on failure.
+func parseSkillFrontmatter(content string) string {
+	lines := strings.Split(content, "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "---" {
+		return ""
+	}
+	inBlock := false
+	for _, line := range lines[1:] {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock {
+			if trimmed == "---" {
+				return "" // no frontmatter block
+			}
+			inBlock = true
+		}
+		if trimmed == "---" {
+			return "" // end of frontmatter, didn't find description
+		}
+		if strings.HasPrefix(trimmed, "description:") {
+			desc := strings.TrimPrefix(trimmed, "description:")
+			desc = strings.TrimSpace(desc)
+			// Unquote if single-quoted or double-quoted.
+			if len(desc) >= 2 && ((desc[0] == '\'' && desc[len(desc)-1] == '\'') || (desc[0] == '"' && desc[len(desc)-1] == '"')) {
+				desc = desc[1 : len(desc)-1]
+			}
+			return desc
+		}
+	}
+	return ""
+}
+
 // --- built-in tools ---
 
 func builtinTools() []openai.ChatCompletionToolParam {
@@ -75,6 +151,9 @@ func builtinTools() []openai.ChatCompletionToolParam {
 		),
 		toolDef("web-fetch", "Fetch the content of a URL and return it as readable text. Strips HTML down to plain text. Use this to read documentation, blog posts, or any page found via web-search. Returns up to 50KB of text.",
 			prop("url", "string", "the URL to fetch"),
+		),
+		toolDef("skill", "Load a skill from ~/.agents/skills/<name>. Skills are reusable instruction sets for specific tasks, domains, or workflows. Use this when the user asks you to perform a task that might have a corresponding skill file, or when you need domain-specific guidance — load the skill first and its instructions will tell you how to proceed. Call with name='list' to see all available skills.",
+			prop("name", "string", "the skill name (subdirectory under ~/.agents/skills/). Use 'list' to see available skills."),
 		),
 	}
 }
@@ -363,6 +442,38 @@ func (a *agent) webFetch(ctx context.Context, call openai.ChatCompletionMessageT
 		return openai.ToolMessage("(empty page — no readable text content)", call.ID)
 	}
 	return openai.ToolMessage(text, call.ID)
+}
+
+func (a *agent) runSkill(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Name == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"name": "..."}`, call.ID)
+	}
+
+	dir := skillsDir()
+
+	if args.Name == "list" {
+		if len(skillIndex) == 0 {
+			return openai.ToolMessage("no skills available", call.ID)
+		}
+		var b strings.Builder
+		for _, se := range skillIndex {
+			fmt.Fprintf(&b, "%s - %s\n", se.Name, se.Description)
+		}
+		return openai.ToolMessage("available skills:\n"+b.String(), call.ID)
+	}
+
+	// Skill is loaded from <name>/SKILL.md.
+	data, err := os.ReadFile(filepath.Join(dir, args.Name, "SKILL.md"))
+	if err != nil {
+		return openai.ToolMessage("error: skill not found: "+args.Name+". Use name='list' to see available skills.", call.ID)
+	}
+	if len(data) == 0 {
+		return openai.ToolMessage("(empty skill file)", call.ID)
+	}
+	return openai.ToolMessage("--- skill: "+args.Name+" ---\n"+string(data), call.ID)
 }
 
 // htmlToText strips HTML down to readable plain text.

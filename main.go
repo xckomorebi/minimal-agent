@@ -37,7 +37,7 @@ func cfgStr(cfg *globalConfig, fn func(*globalConfig) *string) string {
 
 func buildSystemMessage() string {
 	var b strings.Builder
-	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, edit, web-search, and web-fetch tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n")
+	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, edit, web-search, web-fetch, and skill tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n")
 	b.WriteString("Editing a file, or overwriting an existing one with write, requires that you already know its current contents. Any earlier read, write, or edit of the file in this session is enough — you need not re-read right before changing it. These tools refuse only when you have never seen the file, or when it changed on disk since you last saw it; in that case read it again to pick up the current contents before retrying. Creating a brand-new file with write is unrestricted.\n")
 	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
 	b.WriteString("\n")
@@ -65,6 +65,17 @@ func buildSystemMessage() string {
 			b.WriteString(" ---\n")
 			b.WriteString(string(data))
 			break
+		}
+	}
+
+	// Include available skills with their descriptions.
+	if len(skillIndex) > 0 {
+		b.WriteString("\n## Available Skills\n\n")
+		b.WriteString("You have a `skill` tool that loads skill instructions from ~/.agents/skills/<name>.\n")
+		b.WriteString("Call skill(name) to load a skill's full instructions before using it. Use name='list' to enumerate.\n")
+		b.WriteString("Available skills (use the skill tool to load one before applying it):\n\n")
+		for _, se := range skillIndex {
+			b.WriteString(fmt.Sprintf("- **%s**: %s\n", se.Name, se.Description))
 		}
 	}
 
@@ -100,6 +111,9 @@ func main() {
 	if err := startConfigWatcher(); err != nil {
 		fmt.Fprintln(os.Stderr, "config watcher:", err)
 	}
+
+	// Build the skill index at startup so it's available in the system prompt.
+	buildSkillIndex()
 
 	apiKey := firstNonEmpty(*apiKeyFlag,
 		cfgStr(globalCfg, func(c *globalConfig) *string { return c.APIKey }),

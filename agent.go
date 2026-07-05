@@ -358,8 +358,8 @@ func (a *agent) doTurn(ctx context.Context) {
 			result, toolDenied := a.runToolCall(ctx, call)
 			a.history = append(a.history, result)
 
-			// Extract result text for display (skip "read" — too verbose).
-			if call.Function.Name != "read" {
+			// Extract result text for display (skip "read" and "skill" — too verbose).
+			if call.Function.Name != "read" && call.Function.Name != "skill" {
 				resultText := a.toolResultText(result)
 				a.sendDisplay(toolResultDisplayMsg{result: resultText})
 			}
@@ -386,6 +386,7 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		NewString        string `json:"new_string"`
 		Query            string `json:"query"`
 		URL              string `json:"url"`
+		Name             string `json:"name"`
 	}
 	json.Unmarshal([]byte(call.Function.Arguments), &args)
 
@@ -408,6 +409,8 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		return false, "web-search", args.Query
 	case "web-fetch":
 		return false, "web-fetch", args.URL
+	case "skill":
+		return false, "skill", args.Name
 	default:
 		return false, call.Function.Name, ""
 	}
@@ -459,6 +462,8 @@ func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessa
 		return a.webSearch(ctx, call), false
 	case "web-fetch":
 		return a.webFetch(ctx, call), false
+	case "skill":
+		return a.runSkill(call), false
 	default:
 		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
 	}
