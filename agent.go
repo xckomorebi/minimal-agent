@@ -24,6 +24,13 @@ type agent struct {
 	sessionDirty bool
 	msgCh        chan tea.Msg // channel to send events to the TUI
 
+	// reasonings stores the full reasoning text for each assistant message in
+	// history, keyed by the message's index in the history slice. Reasoning is
+	// never persisted (API rejects it as input), but kept in memory so features
+	// like "show thinking detail" can expand collapsed blocks.
+	reasonings    map[int]string
+	reasoningAcc  string // accumulator during streaming
+
 	// fileMtimes tracks the on-disk modification time of each file at the moment
 	// this agent last read or wrote it (keyed by absolute path). The edit tool
 	// uses it to refuse edits to files it hasn't seen, or that changed on disk
@@ -205,6 +212,7 @@ func (a *agent) doTurn(ctx context.Context) {
 				if !hasReasoning {
 					hasReasoning = true
 				}
+				a.reasoningAcc += reasoning
 				a.sendDisplay(reasoningMsg(reasoning))
 				// Small delay so the TUI can keep up with rendering.
 				time.Sleep(5 * time.Millisecond)
@@ -228,7 +236,15 @@ func (a *agent) doTurn(ctx context.Context) {
 
 		msg := acc.Choices[0].Message
 		param := msg.ToParam()
+		idx := len(a.history)
 		a.history = append(a.history, param)
+		if a.reasoningAcc != "" {
+			if a.reasonings == nil {
+				a.reasonings = make(map[int]string)
+			}
+			a.reasonings[idx] = a.reasoningAcc
+			a.reasoningAcc = ""
+		}
 		a.sessionDirty = true
 
 		if len(msg.ToolCalls) == 0 {

@@ -82,11 +82,38 @@ type tuiModel struct {
 // different roles, so a single multi-line block (banner, wrapped message, an
 // agent turn's reasoning+tools+response) stays visually contiguous.
 const (
-	roleBanner  = "banner"
-	roleUser    = "user"
-	roleAgent   = "agent"
-	roleCommand = "command"
+	roleBanner       = "banner"
+	roleUser         = "user"
+	roleAgent        = "agent"       // agent text / thinking
+	roleAgentTool    = "agentTool"   // tool call
+	roleAgentResult  = "agentResult" // tool result
+	roleCommand      = "command"
 )
+
+// spacerGap returns the number of blank lines between two roles.
+func spacerGap(prev, cur string) int {
+	if prev == cur {
+		return 0
+	}
+	// User → any agent role: 1 blank.
+	if prev == roleUser && isAgentRole(cur) {
+		return 1
+	}
+	// Any agent role → user: 2 blanks.
+	if isAgentRole(prev) && cur == roleUser {
+		return 2
+	}
+	// Tool call → tool result: tight, 0 gap.
+	if prev == roleAgentTool && cur == roleAgentResult {
+		return 0
+	}
+	// All other role transitions: 1 blank.
+	return 1
+}
+
+func isAgentRole(r string) bool {
+	return r == roleAgent || r == roleAgentTool || r == roleAgentResult
+}
 
 type committedLine struct {
 	role string
@@ -163,15 +190,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		wasReady := m.ready
-		if !wasReady {
+		if !m.ready {
 			m.ready = true
 		}
 		m.viewport.Width = max(1, msg.Width-4)
 		m.textarea.SetWidth(max(1, msg.Width-4))
-		if !wasReady {
-			m.rebuildOutput()
-		}
+		m.rebuildOutput()
 		return m, nil
 
 	case tea.MouseMsg:
@@ -266,12 +290,18 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// --- Agent events ---
 
 	case reasoningMsg:
+		// If content was streaming, commit it and reset.
 		if m.streamingKind == "content" {
 			m.commitAgent(m.streamingLine)
 			m.streamingLine = ""
 			m.streamingKind = ""
 		}
-		m.thinkingActive = true
+		// Start a fresh thinking block when entering reasoning from a
+		// non-reasoning state (new turn, or after tool-call flush).
+		if !m.thinkingActive {
+			m.thinkingBuf = ""
+			m.thinkingActive = true
+		}
 		m.thinkingBuf += string(msg)
 		m.streamingLine = m.thinkingBuf
 		m.streamingKind = "reasoning"
@@ -281,7 +311,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case contentMsg:
 		if m.thinkingActive {
 			m.thinkingActive = false
-			m.push(roleAgent, renderCollapsedThinking(0))
+			m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
 			m.thinkingBuf = ""
 			m.streamingLine = ""
 			m.streamingKind = ""
@@ -293,7 +323,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolCallDisplayMsg:
 		m.flushStreaming()
-		m.push(roleAgent, renderTool(msg.name, msg.detail))
+		m.push(roleAgentTool, renderTool(msg.name, msg.detail))
 		m.updateViewportContent()
 		return m, waitForMsg(m.msgCh)
 
@@ -310,7 +340,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if len(short) > 120 {
 			short = short[:120] + "..."
 		}
-		m.push(roleAgent, renderToolResult(short))
+		m.push(roleAgentResult, renderToolResult(short))
 		m.updateViewportContent()
 		return m, waitForMsg(m.msgCh)
 
@@ -365,7 +395,9 @@ func (m *tuiModel) flushStreaming() {
 	case "content":
 		m.commitAgent(m.streamingLine)
 	case "reasoning":
-		m.push(roleAgent, renderCollapsedThinking(0))
+		m.push(roleAgent, renderCollapsedThinking(m.thinkingBuf))
+		m.thinkingBuf = ""
+		m.thinkingActive = false
 	}
 	m.streamingLine = ""
 	m.streamingKind = ""
@@ -374,23 +406,68 @@ func (m *tuiModel) flushStreaming() {
 func (m *tuiModel) updateViewportContent() {
 	var lines []string
 	for i, cl := range m.committed {
-		if i > 0 && m.committed[i-1].role != cl.role {
-			lines = append(lines, "")
+		if i > 0 {
+			gap := spacerGap(m.committed[i-1].role, cl.role)
+			for j := 0; j < gap; j++ {
+				lines = append(lines, "")
+			}
 		}
 		lines = append(lines, cl.text)
 	}
 
 	if m.streamingLine != "" {
-		// Streaming reasoning/content is part of the agent turn; separate it
-		// from a preceding non-agent block only.
-		if n := len(m.committed); n > 0 && m.committed[n-1].role != roleAgent {
-			lines = append(lines, "")
+		// Streaming reasoning/content is part of the agent turn. Determine the
+		// effective preceding role for spacing.
+		prevRole := roleAgent // default: no gap
+		if n := len(m.committed); n > 0 {
+			prevRole = m.committed[n-1].role
+		}
+		var streamRole string
+		switch m.streamingKind {
+		case "reasoning":
+			streamRole = roleAgent
+		case "content":
+			streamRole = roleAgent
+		default:
+			streamRole = roleAgent
+		}
+		if prevRole != streamRole {
+			gap := spacerGap(prevRole, streamRole)
+			for j := 0; j < gap; j++ {
+				lines = append(lines, "")
+			}
 		}
 		switch m.streamingKind {
 		case "reasoning":
-			lines = append(lines, renderThinkStar(m.starVisible)+" "+reasonStyle.Render(m.streamingLine))
+			prefix := renderThinkStar(m.starVisible) + " "
+			indent := strings.Repeat(" ", lipgloss.Width(prefix))
+			cw := m.contentWidth()
+			wrapWidth := cw - lipgloss.Width(prefix)
+			if wrapWidth < 20 {
+				wrapWidth = 80
+			}
+			for i, ln := range wordWrap(m.streamingLine, wrapWidth) {
+				if i == 0 {
+					lines = append(lines, prefix+reasonStyle.Render(ln))
+				} else {
+					lines = append(lines, indent+reasonStyle.Render(ln))
+				}
+			}
 		case "content":
-			lines = append(lines, renderAgent(m.streamingLine))
+			prefix := agentStyle.Render("agent>") + " "
+			indent := strings.Repeat(" ", lipgloss.Width(prefix))
+			cw := m.contentWidth()
+			wrapWidth := cw - lipgloss.Width(prefix)
+			if wrapWidth < 20 {
+				wrapWidth = 80
+			}
+			for i, ln := range wordWrap(m.streamingLine, wrapWidth) {
+				if i == 0 {
+					lines = append(lines, prefix+ln)
+				} else {
+					lines = append(lines, indent+ln)
+				}
+			}
 		default:
 			lines = append(lines, m.streamingLine)
 		}
@@ -445,12 +522,11 @@ func (m *tuiModel) rebuildOutput() {
 			m.commitUser(msg.OfUser.Content.OfString.Value)
 		}
 		if msg.OfAssistant != nil {
-			// Show thinking indicator + tool calls with brief detail.
+			// Show tool calls with brief detail.
 			if len(msg.OfAssistant.ToolCalls) > 0 {
-				m.push(roleAgent, renderCollapsedThinking(0))
 				for _, tc := range msg.OfAssistant.ToolCalls {
 					toolCallNames[tc.ID] = tc.Function.Name
-					m.push(roleAgent, renderTool(tc.Function.Name, toolCallBrief(tc)))
+					m.push(roleAgentTool, renderTool(tc.Function.Name, toolCallBrief(tc)))
 				}
 				continue
 			}
@@ -473,11 +549,9 @@ func (m *tuiModel) rebuildOutput() {
 			if len(short) > 120 {
 				short = short[:120] + "..."
 			}
-			m.push(roleAgent, renderToolResult(short))
+			m.push(roleAgentResult, renderToolResult(short))
 		}
 	}
-	m.streamingLine = ""
-	m.streamingKind = ""
 	m.updateViewportContent()
 }
 

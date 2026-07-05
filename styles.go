@@ -405,7 +405,7 @@ func renderReasoning(line string) string {
 	return thinkStyle.Render("✦") + " " + reasonStyle.Render(line)
 }
 
-func renderCollapsedThinking(n int) string {
+func renderCollapsedThinking(reasoning string) string {
 	summary := "thought about it"
 	// Render the star at full magenta (not faint) so it stays visible, then
 	// the summary text dim/italic.
