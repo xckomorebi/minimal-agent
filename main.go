@@ -161,7 +161,7 @@ func (a *agent) autoSave() {
 		return
 	}
 	if err := a.saveSession(); err != nil {
-		fmt.Fprintf(os.Stderr, "  auto-save failed: %v\n", err)
+		fmt.Fprintln(os.Stderr, "  "+red("auto-save failed: "+err.Error()))
 	} else {
 		fmt.Printf("  (saved %q)\n", a.sessionName)
 	}
@@ -186,7 +186,7 @@ func (a *agent) handleCommand(cmd string) {
 			fmt.Printf("  renamed %q -> %q\n", oldName, a.sessionName)
 		}
 		if err := a.saveSession(); err != nil {
-			fmt.Println("  save error:", err)
+			fmt.Println("  " + red("save error: "+err.Error()))
 		} else {
 			fmt.Printf("  saved %q (%d messages)\n", a.sessionName, len(a.history))
 		}
@@ -197,7 +197,7 @@ func (a *agent) handleCommand(cmd string) {
 		}
 		name := parts[1]
 		if err := a.loadSession(name); err != nil {
-			fmt.Println("  load error:", err)
+			fmt.Println("  " + red("load error: "+err.Error()))
 		} else {
 			fmt.Printf("  loaded %q (%d messages)\n", name, len(a.history))
 			a.printHistory()
@@ -219,7 +219,7 @@ func (a *agent) handleCommand(cmd string) {
 	case "list-session":
 		names, err := listSessions()
 		if err != nil {
-			fmt.Println("  list error:", err)
+			fmt.Println("  " + red("list error: "+err.Error()))
 			return
 		}
 		if len(names) == 0 {
@@ -227,11 +227,11 @@ func (a *agent) handleCommand(cmd string) {
 			return
 		}
 		for _, n := range names {
-			marker := " "
 			if n == a.sessionName {
-				marker = "*"
+				fmt.Printf("  %s %s\n", green("*"), n)
+			} else {
+				fmt.Printf("    %s\n", n)
 			}
-			fmt.Printf("  %s %s\n", marker, n)
 		}
 	default:
 		fmt.Printf("  unknown command: /%s\n", parts[0])
@@ -312,7 +312,7 @@ func (a *agent) runTurn(ctx context.Context) error {
 			// doesn't expose it as a named field on the delta struct yet.
 			if reasoning := extractReasoning(chunk.RawJSON()); reasoning != "" {
 				if !printed {
-					fmt.Print("\n" + agentPrefix())
+					fmt.Print("\n" + thinkingPrefix())
 					printed = true
 				}
 				fmt.Print(dim(reasoning))
@@ -390,6 +390,11 @@ func agentPrefix() string {
 	return "\033[1m\033[32magent>\033[0m "
 }
 
+// thinkingPrefix returns a styled "thinking>" prompt for reasoning blocks.
+func thinkingPrefix() string {
+	return "\033[1m\033[35mthinking>\033[0m "
+}
+
 // toolDot returns a yellow bullet for tool-call output lines.
 func toolDot() string {
 	return "\033[1m\033[33m●\033[0m "
@@ -403,6 +408,11 @@ func toolLabel(name string) string {
 // red wraps text in red for warnings / denials.
 func red(s string) string {
 	return "\033[31m" + s + "\033[0m"
+}
+
+// green wraps text in green for positive / active indicators.
+func green(s string) string {
+	return "\033[1m\033[32m" + s + "\033[0m"
 }
 
 // banner prints a startup banner with model, session name, and quit hint.
@@ -641,7 +651,7 @@ func main() {
 	flag.Parse()
 
 	if *apiKey == "" {
-		fmt.Fprintln(os.Stderr, "error: no API key; set MA_API_KEY or pass -ma-api-key")
+		fmt.Fprintln(os.Stderr, red("✗ no API key; set MA_API_KEY or pass -ma-api-key"))
 		os.Exit(1)
 	}
 
@@ -732,11 +742,11 @@ func main() {
 		a.history = append(a.history, openai.UserMessage(line))
 		a.sessionDirty = true
 		if err := a.runTurn(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "error: "+err.Error())
+			fmt.Fprintln(os.Stderr, "\n"+red("✗ API error: "+err.Error()))
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, "input error: "+err.Error())
+		fmt.Fprintln(os.Stderr, red("✗ input error: "+err.Error()))
 	}
 }
 
