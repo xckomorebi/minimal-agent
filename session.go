@@ -144,31 +144,12 @@ func resolveSession(explicit string) string {
 }
 
 // autoSave saves the session if it has changed since the last save.
+// Silent in TUI mode — errors go to stderr.
 func (a *agent) autoSave() {
 	if !a.sessionDirty {
 		return
 	}
 	if err := a.saveSession(); err != nil {
-		fmt.Fprintln(os.Stderr, "  "+red("auto-save failed: "+err.Error()))
-	} else {
-		fmt.Printf("  (saved %q)\n", a.sessionName)
-	}
-}
-
-// printHistory prints all conversational messages (user + assistant text),
-// skipping system messages, tool calls, tool results, and reasoning blocks.
-func (a *agent) printHistory() {
-	for _, msg := range a.history {
-		if msg.OfUser != nil {
-			fmt.Println("\n" + youPrefix() + msg.OfUser.Content.OfString.Value)
-		}
-		if msg.OfAssistant != nil {
-			if len(msg.OfAssistant.ToolCalls) > 0 {
-				continue
-			}
-			if text := msg.OfAssistant.Content.OfString.Value; text != "" {
-				fmt.Println("\n" + agentPrefix() + text)
-			}
-		}
+		fmt.Fprintln(os.Stderr, "auto-save failed:", err)
 	}
 }

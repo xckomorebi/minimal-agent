@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"flag"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
@@ -96,14 +96,14 @@ func main() {
 	globalMu.Unlock()
 
 	if err := startConfigWatcher(); err != nil {
-		fmt.Fprintln(os.Stderr, red("config watcher: "+err.Error()))
+		fmt.Fprintln(os.Stderr, "config watcher:", err)
 	}
 
 	apiKey := firstNonEmpty(*apiKeyFlag,
 		cfgStr(globalCfg, func(c *globalConfig) *string { return c.APIKey }),
 		os.Getenv("MA_API_KEY"))
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, red("✗ no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -ma-api-key"))
+		fmt.Fprintln(os.Stderr, "no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -ma-api-key")
 		os.Exit(1)
 	}
 
@@ -113,24 +113,19 @@ func main() {
 		"https://api.openai.com/v1")
 	url := strings.TrimRight(baseURL, "/") + "/"
 
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-
 	a := &agent{
 		client: openai.NewClient(
 			option.WithAPIKey(apiKey),
 			option.WithBaseURL(url),
 		),
 		flagModel:   *modelFlag,
-		in:          scanner,
 		sessionName: resolveSession(*sessionFlag),
-		tools: allTools(),
+		tools:       allTools(),
 		history: []openai.ChatCompletionMessageParamUnion{
 			openai.SystemMessage(buildSystemMessage()),
 		},
 	}
 
-	loaded := false
 	if *newFlag {
 		a.sessionName = "" // force fresh timestamped session
 	}
@@ -138,59 +133,32 @@ func main() {
 		a.sessionName = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
 	} else if err := a.loadSession(a.sessionName); err != nil {
 		// Session file gone or corrupt — start fresh under the same name.
-	} else {
-		loaded = true
 	}
 
-	banner(a.effectiveModel(), a.sessionName)
-	if loaded {
-		a.printHistory()
-	}
+	// Build the TUI model (history is loaded on first WindowSizeMsg).
+	m := newTUIModel(a)
 
+	// Handle graceful shutdown signals.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
-		<-sigCh
-		fmt.Println()
-		a.autoSave()
-		os.Exit(0)
+		select {
+		case <-sigCh:
+			cancel()
+			a.autoSave()
+			os.Exit(0)
+		case <-ctx.Done():
+		}
 	}()
 
-	ctx := context.Background()
-	for {
-		fmt.Print("\n" + youPrefix())
-		if !scanner.Scan() {
-			a.autoSave()
-			break
-		}
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-
-		// If line ends with backslash, read continuation lines.
-		for strings.HasSuffix(line, "\\") {
-			line = strings.TrimSuffix(line, "\\")
-			fmt.Print(dim("  ... "))
-			if !scanner.Scan() {
-				break
-			}
-			next := strings.TrimSpace(scanner.Text())
-			line += "\n" + next
-		}
-
-		if strings.HasPrefix(line, "/") {
-			a.handleCommand(strings.TrimPrefix(line, "/"))
-			continue
-		}
-
-		a.history = append(a.history, openai.UserMessage(line))
-		a.sessionDirty = true
-		if err := a.runTurn(ctx); err != nil {
-			fmt.Fprintln(os.Stderr, "\n"+red("✗ API error: "+err.Error()))
-		}
+	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
-	if err := scanner.Err(); err != nil {
-		fmt.Fprintln(os.Stderr, red("✗ input error: "+err.Error()))
-	}
+
+	// Save on clean exit.
+	a.autoSave()
 }

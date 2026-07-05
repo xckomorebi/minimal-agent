@@ -9,11 +9,11 @@ import (
 	"github.com/openai/openai-go"
 )
 
-// handleCommand processes a session-management command entered as "/cmd [arg]".
-func (a *agent) handleCommand(cmd string) {
+// handleCommandStr processes a command and returns a display string.
+func (a *agent) handleCommandStr(cmd string) string {
 	parts := strings.Fields(cmd)
 	if len(parts) == 0 {
-		return
+		return ""
 	}
 	switch parts[0] {
 	case "save":
@@ -23,25 +23,20 @@ func (a *agent) handleCommand(cmd string) {
 			a.sessionName = parts[1]
 			a.sessionDirty = true
 			os.Remove(oldPath)
-			fmt.Printf("  renamed %q -> %q\n", oldName, a.sessionName)
 		}
 		if err := a.saveSession(); err != nil {
-			fmt.Println("  " + red("save error: "+err.Error()))
-		} else {
-			fmt.Printf("  saved %q (%d messages)\n", a.sessionName, len(a.history))
+			return "save error: " + err.Error()
 		}
+		return fmt.Sprintf("saved %q (%d messages)", a.sessionName, len(a.history))
 	case "resume":
 		if len(parts) < 2 {
-			fmt.Println("  usage: /resume <name>  (use /list-session to see saved sessions)")
-			return
+			return "usage: /resume <name>  (use /list-session to see saved sessions)"
 		}
 		name := parts[1]
 		if err := a.loadSession(name); err != nil {
-			fmt.Println("  " + red("load error: "+err.Error()))
-		} else {
-			fmt.Printf("  loaded %q (%d messages)\n", name, len(a.history))
-			a.printHistory()
+			return "load error: " + err.Error()
 		}
+		return fmt.Sprintf("loaded %q (%d messages)", name, len(a.history))
 	case "new-session":
 		name := ""
 		if len(parts) > 1 {
@@ -55,86 +50,93 @@ func (a *agent) handleCommand(cmd string) {
 		}
 		a.sessionName = name
 		a.sessionDirty = true
-		fmt.Printf("  new session %q\n", name)
+		return fmt.Sprintf("new session %q", name)
 	case "list-session":
 		names, err := listSessions()
 		if err != nil {
-			fmt.Println("  " + red("list error: "+err.Error()))
-			return
+			return "list error: " + err.Error()
 		}
 		if len(names) == 0 {
-			fmt.Println("  (no saved sessions)")
-			return
+			return "(no saved sessions)"
 		}
-		for _, n := range names {
+		var b strings.Builder
+		for i, n := range names {
+			if i > 0 {
+				b.WriteString(", ")
+			}
 			if n == a.sessionName {
-				fmt.Printf("  %s %s\n", green("*"), n)
+				b.WriteString("*" + n)
 			} else {
-				fmt.Printf("    %s\n", n)
+				b.WriteString(n)
 			}
 		}
+		return b.String()
 	case "config":
-		a.handleConfig(parts[1:])
+		return a.handleConfigStr(parts[1:])
 	default:
-		fmt.Printf("  unknown command: /%s\n", parts[0])
+		return "unknown command: /" + parts[0]
 	}
 }
 
-// handleConfig processes /config commands to view or change session settings.
-func (a *agent) handleConfig(args []string) {
+// handleConfigStr returns config info as a multi-line string.
+func (a *agent) handleConfigStr(args []string) string {
 	c := readGlobalCfg()
 	if len(args) == 0 {
 		model := a.effectiveModel()
-		modelSrc := dim("(default)")
+		src := "(default)"
 		if a.flagModel != "" {
-			modelSrc = dim("(flag)")
+			src = "(flag)"
 		} else if a.config.Model != nil && *a.config.Model != "" {
-			modelSrc = dim("(session)")
+			src = "(session)"
 		} else if c != nil && c.Model != nil && *c.Model != "" {
-			modelSrc = dim("(config file)")
+			src = "(config file)"
 		} else if os.Getenv("MA_MODEL") != "" {
-			modelSrc = dim("(env)")
+			src = "(env)"
 		}
-		fmt.Printf("  model          : %s %s\n", model, modelSrc)
-		fmt.Printf("  auto-edit      : %s %s\n", onOff(a.autoEdit()), sourceLabel(a.config.AutoEdit != nil, c != nil && c.AutoEdit != nil))
-		fmt.Printf("  thinking       : %s %s\n", onOff(a.thinking()), sourceLabel(a.config.Thinking != nil, c != nil && c.Thinking != nil))
-		fmt.Printf("  thinking-effort: %s %s\n", effortString(a.thinkingEffort()), sourceLabel(a.config.ThinkingEffort != nil, c != nil && c.ThinkingEffort != nil))
-		return
+		auto := onOff(a.autoEdit())
+		think := onOff(a.thinking())
+		effort := effortString(a.thinkingEffort())
+		return fmt.Sprintf("model     : %s %s\nauto-edit : %s\nthinking  : %s\neffort    : %s",
+			model, src, auto, think, effort)
 	}
 	switch args[0] {
 	case "model":
 		if len(args) < 2 {
-			fmt.Println("  usage: /config model <model-id>")
-			return
+			return "usage: /config model <model-id>"
 		}
 		m := args[1]
 		a.config.Model = &m
 		a.sessionDirty = true
-		fmt.Printf("  model: %s\n", m)
+		return "model: " + m
 	case "auto-edit":
 		v := !a.autoEdit()
 		a.config.AutoEdit = &v
 		a.sessionDirty = true
-		fmt.Printf("  auto-edit: %s\n", onOff(v))
+		return "auto-edit: " + onOff(v)
 	case "thinking":
 		v := !a.thinking()
 		a.config.Thinking = &v
 		a.sessionDirty = true
-		fmt.Printf("  thinking: %s\n", onOff(v))
+		return "thinking: " + onOff(v)
 	case "thinking-effort":
 		if len(args) < 2 {
-			fmt.Println("  usage: /config thinking-effort <low|medium|high>")
-			return
+			return "usage: /config thinking-effort <low|medium|high>"
 		}
 		level := strings.ToLower(args[1])
 		if level != "low" && level != "medium" && level != "high" {
-			fmt.Printf("  unknown effort level %q (use low, medium, or high)\n", args[1])
-			return
+			return "unknown effort level " + level + " (use low, medium, high)"
 		}
 		a.config.ThinkingEffort = &level
 		a.sessionDirty = true
-		fmt.Printf("  thinking-effort: %s\n", level)
+		return "thinking-effort: " + level
 	default:
-		fmt.Printf("  unknown config key %q; try model, auto-edit, thinking, or thinking-effort\n", args[0])
+		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort"
 	}
+}
+
+func onOff(v bool) string {
+	if v {
+		return "on"
+	}
+	return "off"
 }

@@ -101,7 +101,7 @@ func startConfigWatcher() error {
 				if !ok {
 					return
 				}
-				fmt.Fprintf(os.Stderr, "  %s\n", red("config watcher error: "+err.Error()))
+				fmt.Fprintf(os.Stderr, "config watcher error: %s\n", err.Error())
 			}
 		}
 	}()
