@@ -17,14 +17,14 @@ this way unless there is a compelling reason.
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
 | `session.go` | Session load/save/list, auto-resume, summary/token-usage persistence |
-| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, implementations (bash, read, write, edit, web-search, web-fetch) |
+| `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, implementations (bash, read, write, edit, web-search, web-fetch, skill), skill index |
 | `tui.go` | Bubble Tea TUI model, viewport, streaming display, approval, picker, autocomplete |
 | `styles.go` | Lipgloss styles, markdown rendering, unified diff rendering, banner |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
 - **Agent loop**: read user input → append to history → stream response →
   execute tool calls → repeat
-- **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch` — defined in `main()`, implemented in `tools.go`
+- **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill` — defined in `main()`, implemented in `tools.go`
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —

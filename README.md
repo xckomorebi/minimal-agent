@@ -13,13 +13,14 @@ A Go-based CLI coding agent with a full-screen TUI, built on the
 Chat Completions tool-calling loop — the agent streams responses, calls tools,
 and can inspect, build, and rewrite itself.
 
-**Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`
+**Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill`
 
 **Features:**
 - Full-screen TUI with markdown rendering, viewport scrolling, and colored diff previews
 - Streaming responses with reasoning/thinking support (collapsible, expand with `Ctrl-O`)
 - Session persistence (auto-save on each turn, auto-resume on startup)
 - Approval flow: state-changing tools prompt `[y/N]` before executing
+- Skill system: reusable instruction sets in `~/.agents/skills/<name>/SKILL.md`, indexed at startup, loaded on demand via the `skill` tool
 - Context window management: token tracking, `/context` display, `/compact` summarization
 - Global config file with hot-reload (`~/.ma/settings.json`)
 - Slash commands with tab-autocomplete and an interactive session picker
@@ -130,8 +131,28 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
 7. The session auto-saves to `.ma-sessions/<name>.json` after each turn.
 
 The system prompt is built dynamically at startup, injecting the current working
-directory, git branch, and the contents of `AGENTS.md` (if present) — so the
-agent always knows what project it's working in.
+directory, git branch, the contents of `AGENTS.md` (if present), and an index of
+available skills — so the agent always knows what project it's working in.
+
+## Skills
+
+Skills are reusable, on-demand instruction sets stored in `~/.agents/skills/`.
+Each skill is a subdirectory with a `SKILL.md` file containing YAML frontmatter
+(`name`, `description`) and markdown instructions.
+
+```
+~/.agents/skills/
+  git-commit/
+    SKILL.md    ← YAML frontmatter + instructions
+  expr-config/
+    SKILL.md
+```
+
+At startup, the agent scans the skills directory and builds an index from the
+frontmatter `description` fields. The index is included in the system prompt so
+the model knows what's available. Use the `skill("name")` tool to load a skill's
+full instructions on demand — they're injected as a tool result and the agent
+follows them from that point on. `skill("list")` enumerates all available skills.
 
 ## Keyboard shortcuts
 
@@ -146,8 +167,9 @@ agent always knows what project it's working in.
 ## Directory layout
 
 ```
-.ma-sessions/        — session JSON files (auto-created)
-~/.ma/settings.json  — global config (optional, hot-reloaded)
-go.mod / go.sum      — Go module dependencies
-*.go                 — single package main (no sub-packages)
+.ma-sessions/          — session JSON files (auto-created)
+~/.ma/settings.json    — global config (optional, hot-reloaded)
+~/.agents/skills/      — skill files (optional, indexed at startup)
+go.mod / go.sum        — Go module dependencies
+*.go                   — single package main (no sub-packages)
 ```
