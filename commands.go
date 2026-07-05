@@ -59,6 +59,24 @@ func init() {
 			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail.",
 			handler:     cmdConfig,
 		},
+		"model": {
+			name:        "model",
+			description: "shorthand for /config model",
+			detail:      "model <model-id> — shorthand for /config model <model-id>.",
+			handler:     cmdModel,
+		},
+		"thinking": {
+			name:        "thinking",
+			description: "shorthand for /config thinking",
+			detail:      "thinking [on|off] — shorthand for /config thinking. Toggles if no value given.",
+			handler:     cmdThinking,
+		},
+		"effort": {
+			name:        "effort",
+			description: "shorthand for /config thinking-effort",
+			detail:      "effort <low|medium|high> — shorthand for /config thinking-effort.",
+			handler:     cmdEffort,
+		},
 		"help": {
 			name:        "help",
 			description: "show slash command help",
@@ -174,6 +192,25 @@ func cmdReSummarize(a *agent, parts []string) string {
 
 func cmdConfig(a *agent, parts []string) string {
 	return a.handleConfigStr(parts[1:])
+}
+
+// cmdModel is /model — shorthand for /config model.
+func cmdModel(a *agent, parts []string) string {
+	// parts[0] = "model"
+	args := append([]string{"model"}, parts[1:]...)
+	return a.handleConfigStr(args)
+}
+
+// cmdThinking is /thinking — shorthand for /config thinking.
+func cmdThinking(a *agent, parts []string) string {
+	args := append([]string{"thinking"}, parts[1:]...)
+	return a.handleConfigStr(args)
+}
+
+// cmdEffort is /effort — shorthand for /config thinking-effort.
+func cmdEffort(a *agent, parts []string) string {
+	args := append([]string{"thinking-effort"}, parts[1:]...)
+	return a.handleConfigStr(args)
 }
 
 // cmdHelp shows all commands (with descriptions) or detailed help for one.
@@ -364,6 +401,24 @@ func autocompleteCommand(input string, cursorPos int) []string {
 			configArgs = configArgs[:len(configArgs)-1]
 		}
 		return autocompleteConfigArg(configArgs, trailingSpace)
+	case "model":
+		modelArgs := parts[1:]
+		if trailingSpace && len(modelArgs) > 0 && modelArgs[len(modelArgs)-1] == "" {
+			modelArgs = modelArgs[:len(modelArgs)-1]
+		}
+		return autocompleteConfigArg(append([]string{"model"}, modelArgs...), trailingSpace)
+	case "thinking":
+		thinkArgs := parts[1:]
+		if trailingSpace && len(thinkArgs) > 0 && thinkArgs[len(thinkArgs)-1] == "" {
+			thinkArgs = thinkArgs[:len(thinkArgs)-1]
+		}
+		return autocompleteConfigArg(append([]string{"thinking"}, thinkArgs...), trailingSpace)
+	case "effort":
+		effortArgs := parts[1:]
+		if trailingSpace && len(effortArgs) > 0 && effortArgs[len(effortArgs)-1] == "" {
+			effortArgs = effortArgs[:len(effortArgs)-1]
+		}
+		return autocompleteConfigArg(append([]string{"thinking-effort"}, effortArgs...), trailingSpace)
 	case "save":
 		if len(parts) == 2 {
 			return filterPrefix(parts[1], allSessionNames())
