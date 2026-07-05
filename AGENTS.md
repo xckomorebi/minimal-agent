@@ -6,14 +6,25 @@ effectively.
 
 ## Architecture
 
-Single-file Go program (`main.go`) with no internal packages. Keep it this
-way — no sub-packages unless there is a compelling reason.
+Multi-file Go program, all in package `main`. No internal packages — keep it
+this way unless there is a compelling reason.
+
+| File | Responsibility |
+|---|---|
+| `main.go` | Entry point, CLI flags, tool definitions, system prompt, helper utils |
+| `agent.go` | Agent struct, `runTurn` streaming loop, reasoning extraction |
+| `commands.go` | `/save`, `/resume`, `/new-session`, `/list-session`, `/config` |
+| `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
+| `messages.go` | `cleanHistory`, `isEmptyMessage` |
+| `session.go` | Session load/save/list, auto-resume, `printHistory` |
+| `tools.go` | `bash`, `read`, `write`, `edit` implementations |
+| `ui.go` | ANSI helpers, banner, diff printing |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
 - **Agent loop**: read user input → append to history → stream response →
   execute tool calls → repeat
-- **Tools**: `bash`, `read`, `write`, `edit` — all defined in `main()`
-- **Session persistence**: history stored as JSON arrays under `.ma-sessions/`;
+- **Tools**: `bash`, `read`, `write`, `edit` — defined in `main()`, implemented in `tools.go`
+- **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
   API key, base URL, model, thinking, effort level, auto-edit
