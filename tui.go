@@ -90,6 +90,12 @@ type tuiModel struct {
 	// Picker state.
 	picker pickerState
 
+	// commandInterleaves maps a history index to command-output blocks that
+	// were emitted at that point. They survive rebuildOutput (e.g. Ctrl-O)
+	// and are interleaved at the correct chronological position. Cleared
+	// on /resume and /new-session.
+	commandInterleaves map[int][][]committedLine
+
 	// Message channel for agent → TUI communication.
 	msgCh chan tea.Msg
 
@@ -959,6 +965,26 @@ func (m *tuiModel) rebuildOutput() {
 			}
 			m.push(roleAgentResult, renderToolResult(short))
 		}
+		// Interleave any command outputs that were emitted after this
+		// history message.
+		if m.commandInterleaves != nil {
+			for _, block := range m.commandInterleaves[i] {
+				m.committed = append(m.committed, block...)
+			}
+		}
+	}
+	// Append command outputs emitted after the last history message
+	// (histIdx >= len(m.agent.history)).
+	if m.commandInterleaves != nil {
+		for i := len(m.agent.history); ; i++ {
+			blocks, ok := m.commandInterleaves[i]
+			if !ok {
+				break
+			}
+			for _, block := range blocks {
+				m.committed = append(m.committed, block...)
+			}
+		}
 	}
 	m.updateViewportContent()
 }
@@ -977,9 +1003,10 @@ func (m *tuiModel) renderCommand(line string) {
 
 	// Commands that replace the agent's history must also rebuild the TUI
 	// committed lines from scratch, so the loaded/new-session messages appear
-	// and old messages are cleared.
+	// and old messages are cleared. Also clear saved command outputs.
 	switch cmdName {
 	case "resume", "new-session":
+		m.commandInterleaves = nil
 		m.bannerSeed = bannerLines(m.agent)
 		m.rebuildOutput()
 	case "config":
@@ -988,8 +1015,14 @@ func (m *tuiModel) renderCommand(line string) {
 		}
 	}
 
+	// Remember the history length *before* we push anything, so command
+	// output is interleaved at the right spot during rebuilds.
+	histIdx := len(m.agent.history)
+
 	// Echo the typed command as a user prompt, same as a normal message.
 	m.commitUser(line)
+
+	prevLen := len(m.committed)
 
 	for _, ln := range strings.Split(result, "\n") {
 		if ln == "" {
@@ -1009,6 +1042,19 @@ func (m *tuiModel) renderCommand(line string) {
 			m.commitCommand(ln)
 		}
 	}
+
+	// Save the command output so it survives rebuildOutput (e.g. Ctrl-O).
+	// Store it keyed by the history index at which it was emitted, so it
+	// stays in the correct chronological position on rebuild.
+	if saved := m.committed[prevLen:]; len(saved) > 0 {
+		cp := make([]committedLine, len(saved))
+		copy(cp, saved)
+		if m.commandInterleaves == nil {
+			m.commandInterleaves = make(map[int][][]committedLine)
+		}
+		m.commandInterleaves[histIdx] = append(m.commandInterleaves[histIdx], cp)
+	}
+
 	m.updateViewportContent()
 }
 
