@@ -202,7 +202,7 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	}
 
 	fmt.Println("\n  edit " + args.Path)
-	printDiff(args.OldString, args.NewString)
+	printDiff(content, args.OldString, args.NewString)
 	if !a.approve() {
 		fmt.Println("  (denied)")
 		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID)
@@ -216,12 +216,55 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 }
 
 // printDiff shows the removed and added lines of an edit for the approval prompt.
-func printDiff(oldString, newString string) {
-	for line := range strings.SplitSeq(oldString, "\n") {
-		fmt.Println("  - " + line)
+// Output is git-like: a hunk header followed by context lines (prefixed " "),
+// removed lines (prefixed "-") and added lines (prefixed "+").
+func printDiff(content, oldString, newString string) {
+	idx := strings.Index(content, oldString)
+	if idx < 0 {
+		return // shouldn't happen — caller already validated
 	}
-	for line := range strings.SplitSeq(newString, "\n") {
-		fmt.Println("  + " + line)
+	before := content[:idx]
+	after := content[idx+len(oldString):]
+
+	// Split into lines, treating "" as empty slice so we count lines correctly.
+	split := func(s string) []string {
+		if s == "" {
+			return nil
+		}
+		return strings.Split(s, "\n")
+	}
+	beforeLines := split(before)
+	afterLines := split(after)
+	oldLines := split(oldString)
+	newLines := split(newString)
+
+	// Up to 3 lines of surrounding context.
+	ctxBefore := min(3, len(beforeLines))
+	ctxAfter := min(3, len(afterLines))
+
+	// Hunk header: line numbers are 1‑based.
+	oldStart := len(beforeLines) - ctxBefore + 1
+	oldCount := ctxBefore + len(oldLines) + ctxAfter
+	newStart := oldStart
+	newCount := ctxBefore + len(newLines) + ctxAfter
+
+	fmt.Printf("@@ -%d,%d +%d,%d @@\n", oldStart, oldCount, newStart, newCount)
+
+	// Context before
+	for _, line := range beforeLines[len(beforeLines)-ctxBefore:] {
+		fmt.Println(" " + line)
+	}
+	// Removed lines
+	for _, line := range oldLines {
+		fmt.Println("-" + line)
+	}
+	// Added lines
+	for _, line := range newLines {
+		fmt.Println("+" + line)
+	}
+	// Context after
+	for _, line := range afterLines[:ctxAfter] {
+		fmt.Println(" " + line)
 	}
 }
 
