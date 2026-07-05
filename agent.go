@@ -207,6 +207,12 @@ func (a *agent) doTurn(ctx context.Context) {
 		}
 		if a.thinking() {
 			params.ReasoningEffort = a.thinkingEffort()
+		} else {
+			// Explicitly disable thinking on backends that accept the
+			// Anthropic-style param (no standard field for this in chat/completions).
+			params.SetExtraFields(map[string]any{
+				"thinking": map[string]any{"type": "disabled"},
+			})
 		}
 
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
