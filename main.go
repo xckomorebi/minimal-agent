@@ -58,6 +58,7 @@ func (a *agent) runTurn(ctx context.Context) error {
 
 		acc := openai.ChatCompletionAccumulator{}
 		printed := false
+		reasoned := false
 		for stream.Next() {
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
@@ -66,10 +67,11 @@ func (a *agent) runTurn(ctx context.Context) error {
 			// doesn't expose it as a named field on the delta struct yet.
 			if reasoning := extractReasoning(chunk.RawJSON()); reasoning != "" {
 				if !printed {
-					fmt.Print("\nagent> ")
+					fmt.Print("\n" + agentPrefix())
 					printed = true
 				}
 				fmt.Print(dim(reasoning))
+				reasoned = true
 			}
 
 			if len(chunk.Choices) == 0 {
@@ -77,8 +79,11 @@ func (a *agent) runTurn(ctx context.Context) error {
 			}
 			if delta := chunk.Choices[0].Delta.Content; delta != "" {
 				if !printed {
-					fmt.Print("\nagent> ")
+					fmt.Print("\n" + agentPrefix())
 					printed = true
+				} else if reasoned {
+					fmt.Print("\n" + agentPrefix())
+					reasoned = false
 				}
 				fmt.Print(delta)
 			}
@@ -129,6 +134,31 @@ func dim(s string) string {
 	return "\033[2m\033[3m" + s + "\033[0m"
 }
 
+// youPrefix returns a styled "you>" prompt.
+func youPrefix() string {
+	return "\033[1m\033[36myou>\033[0m "
+}
+
+// agentPrefix returns a styled "agent>" prompt.
+func agentPrefix() string {
+	return "\033[1m\033[32magent>\033[0m "
+}
+
+// toolDot returns a yellow bullet for tool-call output lines.
+func toolDot() string {
+	return "\033[1m\033[33m●\033[0m "
+}
+
+// toolLabel returns a bold yellow tool-name label.
+func toolLabel(name string) string {
+	return "\033[1m\033[33m" + name + "\033[0m"
+}
+
+// red wraps text in red for warnings / denials.
+func red(s string) string {
+	return "\033[31m" + s + "\033[0m"
+}
+
 // runTool dispatches a single tool call to its handler and returns a tool result.
 func (a *agent) runTool(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	switch call.Function.Name {
@@ -155,9 +185,9 @@ func (a *agent) runBash(call openai.ChatCompletionMessageToolCall) openai.ChatCo
 		return openai.ToolMessage(`error: invalid tool input; expected {"command": "..."}`, call.ID)
 	}
 
-	fmt.Println("\n  $ " + args.Command)
+	fmt.Println("\n  " + toolDot() + toolLabel("bash") + " $ " + args.Command)
 	if args.RequiresApproval && !a.approve() {
-		fmt.Println("  (denied)")
+		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to run this command", call.ID)
 	}
 
@@ -181,7 +211,7 @@ func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 		return openai.ToolMessage(`error: invalid tool input; expected {"path": "..."}`, call.ID)
 	}
 
-	fmt.Println("\n  read " + args.Path)
+	fmt.Println("\n  " + toolDot() + toolLabel("read") + " " + args.Path)
 	data, err := os.ReadFile(args.Path)
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
@@ -202,9 +232,9 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.Chat
 		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID)
 	}
 
-	fmt.Printf("\n  write %s (%d bytes)\n", args.Path, len(args.Content))
+	fmt.Printf("\n  %s%s %s (%d bytes)\n", toolDot(), toolLabel("write"), args.Path, len(args.Content))
 	if !a.approve() {
-		fmt.Println("  (denied)")
+		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to write this file", call.ID)
 	}
 
@@ -241,10 +271,10 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID)
 	}
 
-	fmt.Println("\n  edit " + args.Path)
+	fmt.Println("\n  " + toolDot() + toolLabel("edit") + " " + args.Path)
 	printDiff(content, args.OldString, args.NewString)
 	if !a.approve() {
-		fmt.Println("  (denied)")
+		fmt.Println("  " + red("(denied)"))
 		return openai.ToolMessage("error: the user denied permission to edit this file", call.ID)
 	}
 
@@ -292,19 +322,19 @@ func printDiff(content, oldString, newString string) {
 
 	// Context before
 	for _, line := range beforeLines[len(beforeLines)-ctxBefore:] {
-		fmt.Println(" " + line)
+		fmt.Println("  " + line)
 	}
 	// Removed lines
 	for _, line := range oldLines {
-		fmt.Println("-" + line)
+		fmt.Println("  \033[31m-" + line + "\033[0m")
 	}
 	// Added lines
 	for _, line := range newLines {
-		fmt.Println("+" + line)
+		fmt.Println("  \033[32m+" + line + "\033[0m")
 	}
 	// Context after
 	for _, line := range afterLines[:ctxAfter] {
-		fmt.Println(" " + line)
+		fmt.Println("  " + line)
 	}
 }
 
@@ -379,7 +409,7 @@ func main() {
 
 	ctx := context.Background()
 	for {
-		fmt.Print("\nyou> ")
+		fmt.Print("\n" + youPrefix())
 		if !scanner.Scan() {
 			break
 		}
