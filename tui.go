@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -586,8 +587,16 @@ func (m tuiModel) View() string {
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
 
-	// Key hints, right above the separator line.
-	b.WriteString(dimStyle.Render("Ctrl-C cancel (idle: quit) · Ctrl-O toggle thinking · ↑↓ scroll"))
+	// Key hints — dynamic based on state.
+	ctrlCLabel := "quit"
+	if m.agentRunning {
+		ctrlCLabel = "cancel"
+	}
+	thinkingLabel := "show thinking"
+	if m.agent.thinkingDetail() {
+		thinkingLabel = "hide thinking"
+	}
+	b.WriteString(dimStyle.Render(fmt.Sprintf("Ctrl-C %s · Ctrl-O %s · ↑↓ scroll", ctrlCLabel, thinkingLabel)))
 	b.WriteString("\n")
 
 	// Separator.
