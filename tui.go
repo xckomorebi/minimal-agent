@@ -65,7 +65,7 @@ type autocompleteState struct {
 
 type pickerItem struct {
 	name    string
-	current bool // is this the current session?
+	current bool   // is this the current session?
 	summary string // brief one-line summary
 }
 
@@ -146,17 +146,25 @@ type tuiModel struct {
 // different roles, so a single multi-line block (banner, wrapped message, an
 // agent turn's reasoning+tools+response) stays visually contiguous.
 const (
-	roleBanner       = "banner"
-	roleUser         = "user"
-	roleAgent        = "agent"       // agent text / thinking
-	roleAgentTool    = "agentTool"   // tool call
-	roleAgentResult  = "agentResult" // tool result
-	roleCommand      = "command"
+	roleBanner      = "banner"
+	roleUser        = "user"
+	roleAgent       = "agent"       // agent text / thinking
+	roleAgentTool   = "agentTool"   // tool call
+	roleAgentResult = "agentResult" // tool result
+	roleCommand     = "command"
 )
 
 // bottomPad is the number of blank lines kept below the newest message so it
 // isn't glued to the input box and there's a little room to scroll past it.
 const bottomPad = 4
+
+// maxInputRows is the tallest the input box may grow to on screen before it
+// starts scrolling its content internally.
+const maxInputRows = 10
+
+// maxLogicalLines caps how many newline-separated lines the input may hold. It
+// only bounds logical lines (a paste guard); the visible height is maxInputRows.
+const maxLogicalLines = 500
 
 // spacerGap returns the number of blank lines between two roles.
 func spacerGap(prev, cur string) int {
@@ -205,7 +213,7 @@ func bannerToCommitted(lines []string) []committedLine {
 
 func newTUIModel(a *agent) tuiModel {
 	ta := textarea.New()
-	ta.Placeholder = "type a message or /command..."
+	ta.Placeholder = "type a message or /command...  (Ctrl-J for newline)"
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Faint(true).Italic(true)
 	ta.BlurredStyle.Placeholder = lipgloss.NewStyle().Faint(true).Italic(true)
 	ta.SetPromptFunc(2, func(lineIdx int) string {
@@ -220,11 +228,19 @@ func newTUIModel(a *agent) tuiModel {
 	ta.FocusedStyle.CursorLine = lipgloss.NewStyle()
 	ta.ShowLineNumbers = false
 	ta.CharLimit = 0
-	ta.MaxHeight = 10
+	// MaxHeight also caps the number of logical lines the textarea will hold
+	// (it refuses newlines past MaxHeight), so keep it generous. The *visible*
+	// box height is capped separately at 10 rows by maxInputHeight(); taller
+	// content scrolls within the box.
+	ta.MaxHeight = maxLogicalLines
 	ta.Focus()
 
-	// Override keymap: Enter submits, Shift+Enter for newline.
-	ta.KeyMap.InsertNewline.SetEnabled(false)
+	// Override keymap: plain Enter submits (handled in Update), Ctrl-J or
+	// Alt-Enter inserts a newline. Plain "enter"/"ctrl+m" are removed from the
+	// InsertNewline binding so they fall through to the submit handler; the
+	// remaining keys are the reliable cross-terminal newline chords.
+	ta.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
+	ta.KeyMap.InsertNewline.SetEnabled(true)
 
 	vp := viewport.New(80, 20)
 	vp.Style = lipgloss.NewStyle().PaddingLeft(1)
@@ -314,6 +330,7 @@ func (m *tuiModel) applyCompletion(choice string) {
 	m.textarea.CursorEnd()
 	// textarea.CursorEnd moves to the end; we can use SetCursor if needed.
 	_ = newPos
+	m.resize()
 }
 
 // openSessionPicker opens a picker to select a saved session. Used by /resume
@@ -341,6 +358,7 @@ func (m *tuiModel) openSessionPicker() {
 	}
 	// Clear the textarea so Enter doesn't leave a stray slash.
 	m.textarea.Reset()
+	m.resize()
 	m.updateViewportContent()
 }
 
@@ -366,11 +384,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.viewport.Width = max(1, msg.Width-4)
 		m.textarea.SetWidth(max(1, msg.Width-4))
-		// Size the viewport height now so GotoBottom in rebuildOutput uses
-		// the real height, not the placeholder 20.
-		taHeight := min(max(1, m.textarea.LineInfo().Height), 10)
-		taHeight = min(taHeight, max(1, msg.Height-2))
-		m.viewport.Height = max(1, msg.Height-2-taHeight)
+		// Size the input/viewport now so GotoBottom in rebuildOutput uses the
+		// real height, not the placeholder 20.
+		m.resize()
 		m.rebuildOutput()
 		return m, nil
 
@@ -734,7 +750,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 				return m, waitForMsg(m.msgCh)
 			}
-			// Not running: exit the program.
+			// Not running, but the input has text: clear the input instead of
+			// quitting, so a stray Ctrl-C doesn't end the session.
+			if m.textarea.Value() != "" {
+				m.textarea.Reset()
+				m.resize()
+				return m, nil
+			}
+			// Idle and empty input: exit the program.
 			m.cancel()
 			m.agent.autoSave()
 			return m, tea.Quit
@@ -758,8 +781,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.agentRunning {
 				return m, nil
 			}
+			// Alt-Enter inserts a newline instead of submitting. (Ctrl-J does the
+			// same and arrives as KeyCtrlJ, handled by the default branch.)
+			if msg.Alt {
+				return m, m.feedTextarea(msg)
+			}
 			line := strings.TrimSpace(m.textarea.Value())
 			m.textarea.Reset()
+			m.resize()
 			if line == "" {
 				return m, nil
 			}
@@ -810,9 +839,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, waitForMsg(m.msgCh)
 
 		default:
-			var cmd tea.Cmd
-			m.textarea, cmd = m.textarea.Update(msg)
-			cmds = append(cmds, cmd)
+			// Grow/shrink the input box as the content wraps or gains newlines.
+			cmds = append(cmds, m.feedTextarea(msg))
 		}
 
 	// --- Agent events ---
@@ -1077,20 +1105,51 @@ func (m *tuiModel) updateViewportContent() {
 	}
 }
 
+// resize sizes the input to its content (1 line when empty, growing as it
+// wraps, capped) and gives the remaining height to the viewport. It must run in
+// Update — not View — so the persisted textarea/viewport heights stay in sync
+// with the content; otherwise the sticky-bottom math in updateViewportContent
+// runs against a stale viewport height and the layout only reconciles on the
+// next unrelated event.
+//
+// LineInfo().Height is the soft-wrapped visual row count of the current logical
+// line; with multi-line input we also account for extra logical lines so the
+// box grows for hard newlines too.
+func (m *tuiModel) resize() {
+	if !m.ready {
+		return
+	}
+	rows := m.textarea.LineInfo().Height
+	if lc := m.textarea.LineCount(); lc > rows {
+		rows = lc
+	}
+	taHeight := min(max(1, rows), m.maxInputHeight())
+	m.textarea.SetHeight(taHeight)
+	m.viewport.Height = max(1, m.height-2-taHeight) // hint + separator + textarea
+}
+
+// maxInputHeight is the tallest the input box may grow to: capped at 10 rows,
+// but never taller than the window leaves room for.
+func (m *tuiModel) maxInputHeight() int {
+	return min(maxInputRows, max(1, m.height-2))
+}
+
+// feedTextarea forwards a content-changing key to the textarea. It first grows
+// the textarea to its max height so the textarea's internal repositionView
+// (which runs during Update) has enough room and never scrolls the first
+// wrapped row out of view; resize then shrinks the box back to fit the content.
+func (m *tuiModel) feedTextarea(msg tea.Msg) tea.Cmd {
+	m.textarea.SetHeight(m.maxInputHeight())
+	var cmd tea.Cmd
+	m.textarea, cmd = m.textarea.Update(msg)
+	m.resize()
+	return cmd
+}
+
 func (m tuiModel) View() string {
 	if !m.ready {
 		return "initializing...\n"
 	}
-
-	// Size the input to its content (1 line when empty, growing as it wraps,
-	// capped) instead of a fixed height, then give the rest to the viewport.
-	// LineInfo().Height is the soft-wrapped visual row count; LineCount() is
-	// logical lines (always 1 here since newlines are disabled), so it would
-	// leave the textarea 1 row tall and scroll wrapped text out of view.
-	taHeight := min(max(1, m.textarea.LineInfo().Height), 10)
-	taHeight = min(taHeight, max(1, m.height-2))
-	m.textarea.SetHeight(taHeight)
-	m.viewport.Height = max(1, m.height-2-taHeight) // hint + separator + textarea
 
 	var b strings.Builder
 
@@ -1277,6 +1336,7 @@ func (m *tuiModel) renderQuestionInput() string {
 
 	return b.String()
 }
+
 // renderApprovalInput renders the approval options and input area.
 func (m *tuiModel) renderApprovalInput() string {
 	var b strings.Builder
