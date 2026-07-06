@@ -16,15 +16,15 @@ import (
 )
 
 type agent struct {
-	client       openai.Client
+	client            openai.Client
 	flagModel         string
 	flagContextWindow int64 // 0 means unset
 	tools             []openai.ChatCompletionToolParam
-	history      []openai.ChatCompletionMessageParamUnion
-	config       sessionConfig
-	sessionName  string
-	sessionDirty bool
-	msgCh        chan tea.Msg // channel to send events to the TUI
+	history           []openai.ChatCompletionMessageParamUnion
+	config            sessionConfig
+	sessionName       string
+	sessionDirty      bool
+	msgCh             chan tea.Msg // channel to send events to the TUI
 
 	// tokenUsage tracks the token count for the current conversation state.
 	// It is set (not accumulated) after each turn so it reflects the last
@@ -418,6 +418,11 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 	case "ask_user_question":
 		return false, "ask", args.Question
 	default:
+		// External tools (MCP, etc.) require approval by default.
+		if strings.HasPrefix(call.Function.Name, "mcp__") {
+			server, tool := parseMCPToolName(call.Function.Name)
+			return true, "mcp:" + server, tool
+		}
 		return false, call.Function.Name, ""
 	}
 }
@@ -455,6 +460,10 @@ func (a *agent) toolDiffLines(call openai.ChatCompletionMessageToolCall) []strin
 
 // runToolCall executes a tool call and returns the tool-result message and denied flag.
 func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+	// Route MCP-prefixed tool calls to the MCP layer.
+	if strings.HasPrefix(call.Function.Name, "mcp__") {
+		return a.runMCPTool(ctx, call), false
+	}
 	switch call.Function.Name {
 	case "bash":
 		return a.runBash(ctx, call)

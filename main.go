@@ -79,6 +79,13 @@ func buildSystemMessage() string {
 		}
 	}
 
+	// Include MCP tools summary.
+	if summary := mcpServerSummary(); summary != "" {
+		b.WriteString("\n")
+		b.WriteString(summary)
+		b.WriteString("\n")
+	}
+
 	return b.String()
 }
 
@@ -152,6 +159,17 @@ func main() {
 		// Session file gone or corrupt — start fresh under the same name.
 	}
 
+	// Connect to MCP servers asynchronously so startup is never blocked.
+	if globalCfg != nil && len(globalCfg.MCPServers) > 0 {
+		configs := globalCfg.MCPServers // copy slice
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			connectMCPServers(ctx, configs)
+			a.tools = allTools()
+		}()
+	}
+
 	// Build the TUI model (history is loaded on first WindowSizeMsg).
 	m := newTUIModel(a)
 
@@ -169,14 +187,17 @@ func main() {
 		<-sigCh
 		cancel()
 		a.autoSave()
+		closeMCPServers()
 		p.Quit()
 	}()
 
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		closeMCPServers()
 		os.Exit(1)
 	}
 
 	// Save on clean exit.
 	a.autoSave()
+	closeMCPServers()
 }

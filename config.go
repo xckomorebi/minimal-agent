@@ -16,14 +16,25 @@ const globalConfigFile = "settings.json"
 // globalConfig holds settings from ~/.ma/settings.json. Fields use pointers
 // so that unset keys (nil) are omitted from JSON and fall through to lower layers.
 type globalConfig struct {
-	APIKey         *string `json:"api_key,omitempty"`
-	BaseURL        *string `json:"base_url,omitempty"`
-	Model          *string `json:"model,omitempty"`
-	Thinking       *bool   `json:"thinking,omitempty"`
-	ThinkingEffort *string `json:"thinking_effort,omitempty"`
-	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
-	AutoEdit       *bool   `json:"auto_edit,omitempty"`
-	ContextWindow  *int64  `json:"context_window,omitempty"`
+	APIKey         *string           `json:"api_key,omitempty"`
+	BaseURL        *string           `json:"base_url,omitempty"`
+	Model          *string           `json:"model,omitempty"`
+	Thinking       *bool             `json:"thinking,omitempty"`
+	ThinkingEffort *string           `json:"thinking_effort,omitempty"`
+	ThinkingDetail *bool             `json:"thinking_detail,omitempty"`
+	AutoEdit       *bool             `json:"auto_edit,omitempty"`
+	ContextWindow  *int64            `json:"context_window,omitempty"`
+	MCPServers     []mcpServerConfig `json:"mcp_servers,omitempty"`
+}
+
+// mcpServerConfig describes an MCP server to connect to on startup.
+// Either Command (for stdio) or URL (for streamable HTTP) must be set.
+type mcpServerConfig struct {
+	Name    string            `json:"name"`
+	Command string            `json:"command,omitempty"`
+	Args    []string          `json:"args,omitempty"`
+	Env     map[string]string `json:"env,omitempty"`
+	URL     string            `json:"url,omitempty"`
 }
 
 var (

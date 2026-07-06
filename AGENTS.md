@@ -20,8 +20,10 @@ this way unless there is a compelling reason.
 | `tools.go` | Tool def helpers, `builtinTools`, `allTools`, `runTool` dispatch, implementations (bash, read, write, edit, web-search, web-fetch, skill), skill index |
 | `tui.go` | Bubble Tea TUI model, viewport, streaming display, approval, picker, autocomplete |
 | `styles.go` | Lipgloss styles, markdown rendering, unified diff rendering, banner |
+| `mcp.go` | MCP client: connect to servers (stdio or streamable HTTP), discover tools, convert to OpenAI format, proxy tool calls |
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
+- **MCP client**: official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`)
 - **Agent loop**: read user input → append to history → stream response →
   execute tool calls → repeat
 - **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill` — defined in `main()`, implemented in `tools.go`
@@ -74,6 +76,46 @@ All keys are optional — unset keys fall through to the next priority level.
 - `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
   window and collapses to "thought about it" when done. When `true`, the full
   thinking text is expanded in the output.
+
+## MCP (Model Context Protocol) Support
+
+minimal-agent can connect to MCP servers to access external tools. Configure
+servers in `~/.ma/settings.json` under the `mcp_servers` key:
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    {
+      "name": "remote-api",
+      "url": "http://localhost:3000/mcp"
+    }
+  ]
+}
+```
+
+Two transport modes:
+
+- **stdio** (set `command` + `args`): minimal-agent spawns the server as a
+  subprocess and communicates over stdin/stdout
+- **streamable HTTP** (set `url`): connects to an already-running MCP server
+  over HTTP (supports the MCP 2025-03-26 streamable transport)
+
+MCP tools are named `mcp.<server>.<tool>` (e.g., `mcp.filesystem.read_file`)
+and require user approval by default (they come from external sources).
+
+### Key implementation details
+
+| File | What it does |
+|---|---|
+| `mcp.go` | `connectMCPServers()`, tool discovery, schema conversion, `runMCPTool()` proxy |
+| `config.go` | `mcpServerConfig` type and `MCPServers` field in `globalConfig` |
+| `agent.go` | `runToolCall()` routes `mcp.`-prefixed calls; `toolApprovalInfo()` requires approval for MCP tools |
+| `main.go` | Calls `connectMCPServers()` at startup, `closeMCPServers()` on shutdown, adds MCP summary to system prompt |
 
 Tests are not yet present. When adding tests, use the standard library `testing`
 package and place them in `main_test.go`.

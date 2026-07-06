@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
@@ -101,6 +102,12 @@ func init() {
 			description: "show slash command help",
 			detail:      "help [command] — list all available slash commands with descriptions, or show detailed help for a specific command.",
 			handler:     cmdHelp,
+		},
+		"mcp": {
+			name:        "mcp",
+			description: "manage connected MCP servers",
+			detail:      "mcp list — show all connected MCP servers with their tools.\nmcp reconnect — disconnect and reconnect all configured MCP servers.",
+			handler:     cmdMcp,
 		},
 	}
 }
@@ -293,6 +300,75 @@ func formatTokens(n int64) string {
 		b.WriteString(s[i : i+3])
 	}
 	return b.String()
+}
+
+// cmdMcp handles /mcp — manage MCP servers.
+func cmdMcp(a *agent, parts []string) string {
+	if len(parts) < 2 {
+		// Default to list.
+		return mcpList()
+	}
+	switch parts[1] {
+	case "list":
+		return mcpList()
+	case "reconnect":
+		return mcpReconnect(a)
+	default:
+		return "usage: /mcp [list|reconnect]"
+	}
+}
+
+func mcpList() string {
+	if len(activeMCPServers) == 0 {
+		return "(no connected MCP servers)"
+	}
+	var b strings.Builder
+	for _, cs := range activeMCPServers {
+		fmt.Fprintf(&b, "%s", cs.config.Name)
+		if cs.config.URL != "" {
+			fmt.Fprintf(&b, "  [%s]", cs.config.URL)
+		}
+		if cs.config.Command != "" {
+			fmt.Fprintf(&b, "  [%s %s]", cs.config.Command, strings.Join(cs.config.Args, " "))
+		}
+		fmt.Fprintf(&b, "  (%d tools)\n", len(cs.tools))
+		for _, t := range cs.tools {
+			fmt.Fprintf(&b, "    - %s\n", t.Function.Name)
+		}
+	}
+	return b.String()
+}
+
+func mcpReconnect(a *agent) string {
+	closeMCPServers()
+	activeMCPServers = nil
+
+	// Reset external tools: keep only MCP tools rebuilt from reconnect.
+	var newExternal []openai.ChatCompletionToolParam
+	for _, t := range externalTools {
+		if strings.HasPrefix(t.Function.Name, "mcp__") {
+			continue // drop old MCP tools
+		}
+		newExternal = append(newExternal, t)
+	}
+	externalTools = newExternal
+
+	var configs []mcpServerConfig
+	if c := readGlobalCfg(); c != nil {
+		configs = c.MCPServers
+	}
+	if len(configs) == 0 {
+		return "no MCP servers configured in settings.json"
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	connectMCPServers(ctx, configs)
+
+	// Update the agent's tool snapshot.
+	a.tools = allTools()
+
+	return mcpList()
 }
 
 // cmdHelp shows all commands (with descriptions) or detailed help for one.
@@ -523,6 +599,12 @@ func autocompleteCommand(input string, cursorPos int) []string {
 			return filterPrefix(parts[1], allSessionNames())
 		}
 		return nil
+	case "mcp":
+		mcpArgs := parts[1:]
+		if trailingSpace && len(mcpArgs) > 0 && mcpArgs[len(mcpArgs)-1] == "" {
+			mcpArgs = mcpArgs[:len(mcpArgs)-1]
+		}
+		return autocompleteMcpArg(mcpArgs, trailingSpace)
 	default:
 		return nil
 	}
@@ -538,6 +620,21 @@ func autocompleteHelpArg(args []string, trailingSpace bool) []string {
 	}
 	if len(args) == 1 && !trailingSpace {
 		return filterPrefix(args[0], commandNames())
+	}
+	return nil
+}
+
+// autocompleteMcpArg handles autocomplete for /mcp subcommands.
+func autocompleteMcpArg(args []string, trailingSpace bool) []string {
+	subs := []string{"list", "reconnect"}
+	if len(args) == 0 {
+		if trailingSpace {
+			return subs
+		}
+		return nil
+	}
+	if len(args) == 1 && !trailingSpace {
+		return filterPrefix(args[0], subs)
 	}
 	return nil
 }
