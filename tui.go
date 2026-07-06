@@ -1442,7 +1442,7 @@ func (m *tuiModel) renderCommand(line string) {
 	// committed lines from scratch, so the loaded/new-session messages appear
 	// and old messages are cleared. Also clear saved command outputs.
 	switch cmdName {
-	case "resume", "new-session":
+	case "resume", "new-session", "clear":
 		m.commandInterleaves = nil
 		m.bannerSeed = bannerLines(m.agent)
 		m.rebuildOutput()

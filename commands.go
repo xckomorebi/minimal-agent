@@ -90,6 +90,12 @@ func init() {
 			detail:      "effort <low|medium|high> — shorthand for /config thinking-effort.",
 			handler:     cmdEffort,
 		},
+		"clear": {
+			name:        "clear",
+			description: "clear history and delete saved session",
+			detail:      "clear — remove all messages from history, delete the saved session file from disk, regenerate the system prompt, and clear the summary. Keeps the session name and configuration settings.",
+			handler:     cmdClear,
+		},
 		"help": {
 			name:        "help",
 			description: "show slash command help",
@@ -160,6 +166,21 @@ func cmdNewSession(a *agent, parts []string) string {
 	a.fileMtimes = nil
 	a.tokenUsage = tokenUsage{}
 	return fmt.Sprintf("new session %q", name)
+}
+
+func cmdClear(a *agent, parts []string) string {
+	os.Remove(sessionPath(a.sessionName))
+	a.history = []openai.ChatCompletionMessageParamUnion{
+		openai.SystemMessage(buildSystemMessage()),
+	}
+	a.summary = ""
+	a.summaryGenerated = false
+	a.reasonings = nil
+	a.reasoningAcc = ""
+	a.fileMtimes = nil
+	a.tokenUsage = tokenUsage{}
+	a.sessionDirty = false
+	return "cleared history (session: " + a.sessionName + ")"
 }
 
 func cmdListSession(a *agent, parts []string) string {
