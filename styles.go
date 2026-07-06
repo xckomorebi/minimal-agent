@@ -425,7 +425,11 @@ func renderTool(name, detail string) string {
 }
 
 func renderToolResult(result string) string {
-	return dimStyle.Render("  " + result)
+	lines := strings.Split(result, "\n")
+	for i, line := range lines {
+		lines[i] = dimStyle.Render("  " + line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func renderError(msg string) string {
