@@ -39,7 +39,7 @@ func buildSystemMessage() string {
 	var b strings.Builder
 	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, edit, web-search, web-fetch, skill, and ask_user_question tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n")
 	b.WriteString("Editing a file, or overwriting an existing one with write, requires that you already know its current contents. Any earlier read, write, or edit of the file in this session is enough — you need not re-read right before changing it. These tools refuse only when you have never seen the file, or when it changed on disk since you last saw it; in that case read it again to pick up the current contents before retrying. Creating a brand-new file with write is unrestricted.\n")
-	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
+	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines. A global ~/.ma/AGENTS.md may also exist with user-level conventions that apply across all projects.\n")
 	b.WriteString("\n")
 	b.WriteString("State-changing operations (write, edit, destructive bash) require user approval before execution. Read-only operations (read, ls, cat, grep, git status) run immediately.\n")
 	b.WriteString("Responses are sent via the chat completions API. By default responses stream token-by-token over SSE; when streaming is disabled, the full response arrives at once. When you need to think through a problem, use reasoning blocks (shown in dim italic to the user) before your final response or tool calls.\n")
@@ -56,6 +56,17 @@ func buildSystemMessage() string {
 		b.WriteString("Current git branch: ")
 		b.WriteString(branch)
 		b.WriteString("\n")
+	}
+
+	// Load global user memory file first (more general), then project memory (more specific).
+	if home, err := os.UserHomeDir(); err == nil {
+		globalPath := filepath.Join(home, ".ma", "AGENTS.md")
+		if data, err := os.ReadFile(globalPath); err == nil {
+			b.WriteString("\n--- ")
+			b.WriteString(globalPath)
+			b.WriteString(" ---\n")
+			b.WriteString(string(data))
+		}
 	}
 
 	for _, name := range []string{"AGENTS.md", "CLAUDE.md", ".agents.md", "CONTEXT.md"} {
