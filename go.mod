@@ -1,4 +1,4 @@
-module minimal-agent
+module github.com/xckomorebi/minimal-agent
 
 go 1.25.0
 
