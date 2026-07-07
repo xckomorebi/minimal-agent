@@ -427,6 +427,9 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 				denied = true
 				continue
 			}
+			// Re-send tool call display so the TUI re-enters the pending-tool
+			// state and shows a blinking dot during the actual execution.
+			a.sendDisplay(toolCallDisplayMsg{name: toolName, detail: toolDetail})
 		}
 
 		result, toolDenied := a.runToolCall(ctx, call)

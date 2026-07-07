@@ -90,6 +90,10 @@ type tuiModel struct {
 	streamingLine string
 	streamingKind string // "reasoning" or "content" or ""
 
+	// Pending tool call (executing, shown with blinking dot).
+	pendingToolName   string
+	pendingToolDetail string
+
 	// Thinking state.
 	thinkingActive bool
 	thinkingBuf    string
@@ -883,7 +887,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case toolCallDisplayMsg:
 		m.flushStreaming()
-		m.push(roleAgentTool, renderTool(msg.name, msg.detail))
+		m.pendingToolName = msg.name
+		m.pendingToolDetail = msg.detail
 		m.updateViewportContent()
 		return m, waitForMsg(m.msgCh)
 
@@ -895,6 +900,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForMsg(m.msgCh)
 
 	case toolResultDisplayMsg:
+		m.flushPendingTool()
 		// Keep short results inline; skip verbose content.
 		short := msg.result
 		if len(short) > 120 {
@@ -974,6 +980,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.thinkingActive || m.agentRunning || m.questionActive || m.waitingApproval {
 			m.starVisible = !m.starVisible
 		}
+		if m.pendingToolName != "" {
+			m.updateViewportContent()
+		}
 		cmds = append(cmds, tickCmd())
 	}
 
@@ -990,7 +999,17 @@ func waitForMsg(ch <-chan tea.Msg) tea.Cmd {
 	}
 }
 
+func (m *tuiModel) flushPendingTool() {
+	if m.pendingToolName == "" {
+		return
+	}
+	m.push(roleAgentTool, renderTool(m.pendingToolName, m.pendingToolDetail))
+	m.pendingToolName = ""
+	m.pendingToolDetail = ""
+}
+
 func (m *tuiModel) flushStreaming() {
+	m.flushPendingTool()
 	if m.streamingLine == "" {
 		return
 	}
@@ -1020,6 +1039,24 @@ func (m *tuiModel) updateViewportContent() {
 			}
 		}
 		lines = append(lines, cl.text)
+	}
+
+	if m.pendingToolName != "" {
+		prevRole := roleAgent
+		if n := len(m.committed); n > 0 {
+			prevRole = m.committed[n-1].role
+		}
+		if prevRole != roleAgentTool {
+			gap := spacerGap(prevRole, roleAgentTool)
+			for j := 0; j < gap; j++ {
+				lines = append(lines, "")
+			}
+		}
+		dot := "○"
+		if m.starVisible {
+			dot = "●"
+		}
+		lines = append(lines, toolDotStyle.Render(dot)+" "+toolDotStyle.Render(m.pendingToolName)+" "+dimStyle.Render(m.pendingToolDetail))
 	}
 
 	if m.streamingLine != "" {
