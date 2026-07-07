@@ -141,6 +141,16 @@ func (a *agent) autoEdit() bool {
 	return false
 }
 
+func (a *agent) stream() bool {
+	if a.config.Stream != nil {
+		return *a.config.Stream
+	}
+	if c := readGlobalCfg(); c != nil && c.Stream != nil {
+		return *c.Stream
+	}
+	return true
+}
+
 func (a *agent) thinking() bool {
 	if a.config.Thinking != nil {
 		return *a.config.Thinking
@@ -218,6 +228,15 @@ func (a *agent) sendCritical(msg tea.Msg) {
 // doTurn runs a full agent turn in a goroutine, sending display events to the TUI
 // via the msgCh channel. It handles the full loop: stream → tool calls → stream → ...
 func (a *agent) doTurn(ctx context.Context) {
+	if a.stream() {
+		a.doTurnStreaming(ctx)
+	} else {
+		a.doTurnNonStreaming(ctx)
+	}
+}
+
+// doTurnStreaming runs the agent turn using the streaming API.
+func (a *agent) doTurnStreaming(ctx context.Context) {
 	defer func() {
 		if r := recover(); r != nil {
 			a.sendCritical(turnErrMsg{fmt.Errorf("panic: %v", r)})
@@ -232,24 +251,9 @@ func (a *agent) doTurn(ctx context.Context) {
 		default:
 		}
 
-		params := openai.ChatCompletionNewParams{
-			Model:    openai.ChatModel(a.effectiveModel()),
-			Messages: cleanHistory(a.history),
-			Tools:    a.tools,
-		}
-		if a.thinking() {
-			params.ReasoningEffort = a.thinkingEffort()
-		} else {
-			// Explicitly disable thinking on backends that accept the
-			// Anthropic-style param (no standard field for this in chat/completions).
-			params.SetExtraFields(map[string]any{
-				"thinking": map[string]any{"type": "disabled"},
-			})
-		}
-
+		params := a.buildCompletionParams()
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
-		hasReasoning := false
 
 		for stream.Next() {
 			select {
@@ -263,12 +267,8 @@ func (a *agent) doTurn(ctx context.Context) {
 			acc.AddChunk(chunk)
 
 			if reasoning := extractReasoning(chunk.RawJSON()); reasoning != "" {
-				if !hasReasoning {
-					hasReasoning = true
-				}
 				a.reasoningAcc += reasoning
 				a.sendDisplay(reasoningMsg(reasoning))
-				// Small delay so the TUI can keep up with rendering.
 				time.Sleep(5 * time.Millisecond)
 			}
 
@@ -284,7 +284,6 @@ func (a *agent) doTurn(ctx context.Context) {
 			return
 		}
 
-		// Set token usage to reflect current conversation state.
 		u := acc.Usage
 		a.tokenUsage.Prompt = u.PromptTokens
 		a.tokenUsage.Completion = u.CompletionTokens
@@ -295,87 +294,157 @@ func (a *agent) doTurn(ctx context.Context) {
 		}
 
 		msg := acc.Choices[0].Message
-		param := msg.ToParam()
-		idx := len(a.history)
-		a.history = append(a.history, param)
-		if a.reasoningAcc != "" {
-			if a.reasonings == nil {
-				a.reasonings = make(map[int]string)
-			}
-			a.reasonings[idx] = a.reasoningAcc
-			a.reasoningAcc = ""
-		}
-		a.sessionDirty = true
-
-		if len(msg.ToolCalls) == 0 {
-			a.sendCritical(turnDoneMsg{})
-			return
-		}
-
-		calls := msg.ToolCalls
-		denied := false
-		for i := range calls {
-			call := calls[i]
-			select {
-			case <-ctx.Done():
-				a.appendCancelledResults(calls[i:])
-				a.sendCritical(turnErrMsg{ctx.Err()})
-				return
-			default:
-			}
-
-			// Determine if approval is needed.
-			needsApproval, toolName, toolDetail := a.toolApprovalInfo(call)
-
-			// Show tool call display.
-			a.sendDisplay(toolCallDisplayMsg{name: toolName, detail: toolDetail})
-
-			// For write/edit, show a unified diff of the pending change so the
-			// user sees what they're approving.
-			if lines := a.toolDiffLines(call); len(lines) > 0 {
-				a.sendDisplay(diffDisplayMsg{lines: lines})
-			}
-
-			if needsApproval {
-				respondCh := make(chan approvalAnswer, 1)
-				a.sendCritical(approvalReqMsg{name: toolName, detail: toolDetail, respond: respondCh})
-				var answer approvalAnswer
-				select {
-				case answer = <-respondCh:
-				case <-ctx.Done():
-					a.appendCancelledResults(calls[i:])
-					a.sendCritical(turnErrMsg{ctx.Err()})
-					return
-				}
-				if !answer.approved {
-					a.sendDisplay(toolResultDisplayMsg{result: "(denied)"})
-					a.history = append(a.history, toolDeniedMessage(call, answer.reason))
-					denied = true
-					continue
-				}
-			}
-
-			result, toolDenied := a.runToolCall(ctx, call)
-			a.history = append(a.history, result)
-			if toolDenied {
-				denied = true
-			}
-
-			// Extract result text for display (skip "read" and "skill" — too verbose).
-			if call.Function.Name != "read" && call.Function.Name != "skill" {
-				resultText := a.toolResultText(result)
-				a.sendDisplay(toolResultDisplayMsg{result: resultText})
-			}
-		}
-		// A denial ends the turn: the user rejected the action, so stop rather
-		// than bounce the denial back to the model to retry. If all tool calls
-		// succeeded, loop so the model sees the results and continues. (The turn
-		// also ends above when the model returns no tool calls.)
-		if denied {
-			a.sendCritical(turnDoneMsg{})
+		if !a.processAssistantMessage(ctx, msg) {
 			return
 		}
 	}
+}
+
+// doTurnNonStreaming runs the agent turn using the non-streaming API.
+func (a *agent) doTurnNonStreaming(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			a.sendCritical(turnErrMsg{fmt.Errorf("panic: %v", r)})
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			a.sendCritical(turnErrMsg{ctx.Err()})
+			return
+		default:
+		}
+
+		params := a.buildCompletionParams()
+		completion, err := a.client.Chat.Completions.New(ctx, params)
+		if err != nil {
+			a.sendCritical(turnErrMsg{err})
+			return
+		}
+
+		u := completion.Usage
+		a.tokenUsage.Prompt = u.PromptTokens
+		a.tokenUsage.Completion = u.CompletionTokens
+		a.tokenUsage.Total = u.TotalTokens
+
+		if len(completion.Choices) == 0 {
+			a.sendCritical(turnErrMsg{fmt.Errorf("empty response (no choices)")})
+			return
+		}
+
+		msg := completion.Choices[0].Message
+
+		// Extract reasoning from the non-streaming response if available.
+		if reasoning := extractReasoningNonStreaming(completion.RawJSON()); reasoning != "" {
+			a.reasoningAcc = reasoning
+			a.sendDisplay(reasoningMsg(reasoning))
+		}
+
+		// Send the full content as one display event.
+		if content := msg.Content; content != "" {
+			a.sendDisplay(contentMsg(content))
+		}
+
+		if !a.processAssistantMessage(ctx, msg) {
+			return
+		}
+	}
+}
+
+// buildCompletionParams constructs the params shared by both streaming and
+// non-streaming paths.
+func (a *agent) buildCompletionParams() openai.ChatCompletionNewParams {
+	params := openai.ChatCompletionNewParams{
+		Model:    openai.ChatModel(a.effectiveModel()),
+		Messages: cleanHistory(a.history),
+		Tools:    a.tools,
+	}
+	if a.thinking() {
+		params.ReasoningEffort = a.thinkingEffort()
+	} else {
+		params.SetExtraFields(map[string]any{
+			"thinking": map[string]any{"type": "disabled"},
+		})
+	}
+	return params
+}
+
+// processAssistantMessage appends the assistant message to history, stores
+// reasoning, and processes tool calls. Returns false if the turn should end
+// (denial, error, or no more tool calls to process).
+func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatCompletionMessage) bool {
+	param := msg.ToParam()
+	idx := len(a.history)
+	a.history = append(a.history, param)
+	if a.reasoningAcc != "" {
+		if a.reasonings == nil {
+			a.reasonings = make(map[int]string)
+		}
+		a.reasonings[idx] = a.reasoningAcc
+		a.reasoningAcc = ""
+	}
+	a.sessionDirty = true
+
+	if len(msg.ToolCalls) == 0 {
+		a.sendCritical(turnDoneMsg{})
+		return false
+	}
+
+	calls := msg.ToolCalls
+	denied := false
+	for i := range calls {
+		call := calls[i]
+		select {
+		case <-ctx.Done():
+			a.appendCancelledResults(calls[i:])
+			a.sendCritical(turnErrMsg{ctx.Err()})
+			return false
+		default:
+		}
+
+		needsApproval, toolName, toolDetail := a.toolApprovalInfo(call)
+		a.sendDisplay(toolCallDisplayMsg{name: toolName, detail: toolDetail})
+
+		if lines := a.toolDiffLines(call); len(lines) > 0 {
+			a.sendDisplay(diffDisplayMsg{lines: lines})
+		}
+
+		if needsApproval {
+			respondCh := make(chan approvalAnswer, 1)
+			a.sendCritical(approvalReqMsg{name: toolName, detail: toolDetail, respond: respondCh})
+			var answer approvalAnswer
+			select {
+			case answer = <-respondCh:
+			case <-ctx.Done():
+				a.appendCancelledResults(calls[i:])
+				a.sendCritical(turnErrMsg{ctx.Err()})
+				return false
+			}
+			if !answer.approved {
+				a.sendDisplay(toolResultDisplayMsg{result: "(denied)"})
+				a.history = append(a.history, toolDeniedMessage(call, answer.reason))
+				denied = true
+				continue
+			}
+		}
+
+		result, toolDenied := a.runToolCall(ctx, call)
+		a.history = append(a.history, result)
+		if toolDenied {
+			denied = true
+		}
+
+		if call.Function.Name != "read" && call.Function.Name != "skill" {
+			resultText := a.toolResultText(result)
+			a.sendDisplay(toolResultDisplayMsg{result: resultText})
+		}
+	}
+	if denied {
+		a.sendCritical(turnDoneMsg{})
+		return false
+	}
+	return true
 }
 
 // toolApprovalInfo returns whether a tool requires approval, its display name, and detail.
@@ -556,6 +625,26 @@ func extractReasoning(raw string) string {
 		return ""
 	}
 	return chunk.Choices[0].Delta.ReasoningContent
+}
+
+// extractReasoningNonStreaming extracts reasoning content from a non-streaming
+// completion response's raw JSON. In non-streaming mode, reasoning is under
+// choices[0].message.reasoning_content rather than choices[0].delta.reasoning_content.
+func extractReasoningNonStreaming(raw string) string {
+	var resp struct {
+		Choices []struct {
+			Message struct {
+				ReasoningContent string `json:"reasoning_content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		return ""
+	}
+	if len(resp.Choices) == 0 {
+		return ""
+	}
+	return resp.Choices[0].Message.ReasoningContent
 }
 
 // generateSessionSummary makes a non-streaming LLM call to produce a brief
