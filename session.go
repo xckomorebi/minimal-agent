@@ -32,6 +32,7 @@ type sessionFile struct {
 	History    []openai.ChatCompletionMessageParamUnion `json:"history"`
 	Summary    string                                   `json:"summary,omitempty"`
 	TokenUsage tokenUsage                               `json:"token_usage,omitempty"`
+	FileMtimes map[string]time.Time                     `json:"file_mtimes,omitempty"`
 }
 
 // sessionPath returns the file path for a given session name.
@@ -45,10 +46,11 @@ func (a *agent) saveSession() error {
 		return err
 	}
 	sf := sessionFile{
-		Config:     a.config,
-		History:    a.history,
-		Summary:    a.summary,
-		TokenUsage: a.tokenUsage,
+		Config:      a.config,
+		History:     a.history,
+		Summary:     a.summary,
+		TokenUsage:  a.tokenUsage,
+		FileMtimes:  a.fileMtimes,
 	}
 	data, err := json.MarshalIndent(sf, "", "  ")
 	if err != nil {
@@ -82,6 +84,7 @@ func (a *agent) loadSession(name string) error {
 		a.sessionDirty = false
 		a.summary = sf.Summary
 		a.tokenUsage = sf.TokenUsage
+		a.fileMtimes = sf.FileMtimes
 		if a.summary != "" {
 			a.summaryGenerated = true
 		}
