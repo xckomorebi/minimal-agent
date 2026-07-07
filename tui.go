@@ -52,7 +52,10 @@ type questionMsg struct {
 	respond    chan<- string
 }
 
-type tickMsg time.Time
+type tickMsg struct {
+	time time.Time
+	fast bool // true for spinner ticks (100ms), false for blink ticks (500ms)
+}
 
 // --- autocomplete ---
 
@@ -108,6 +111,8 @@ type tuiModel struct {
 
 	// Agent running state.
 	agentRunning bool
+	spinnerIdx   int
+	dotIdx       int
 
 	// Question state (ask_user_question tool).
 	questionActive     bool
@@ -169,6 +174,9 @@ const maxInputRows = 10
 // maxLogicalLines caps how many newline-separated lines the input may hold. It
 // only bounds logical lines (a paste guard); the visible height is maxInputRows.
 const maxLogicalLines = 500
+
+// spinnerFrames are the braille spinner animation frames for the running indicator.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 // spacerGap returns the number of blank lines between two roles.
 func spacerGap(prev, cur string) int {
@@ -369,11 +377,15 @@ func (m *tuiModel) openSessionPicker() {
 // --- Bubble Tea interface ---
 
 func (m tuiModel) Init() tea.Cmd {
-	return tea.Batch(textarea.Blink, tickCmd())
+	return tea.Batch(textarea.Blink, tickCmd(), fastTickCmd())
 }
 
 func tickCmd() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg{time: t, fast: false} })
+}
+
+func fastTickCmd() tea.Cmd {
+	return tea.Tick(100*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg{time: t, fast: true} })
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -977,13 +989,25 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tickMsg:
-		if m.thinkingActive || m.agentRunning || m.questionActive || m.waitingApproval {
-			m.starVisible = !m.starVisible
+		if !msg.fast {
+			if m.thinkingActive || m.agentRunning || m.questionActive || m.waitingApproval {
+				m.starVisible = !m.starVisible
+			}
+			if m.pendingToolName != "" {
+				m.updateViewportContent()
+			}
+			if m.agentRunning {
+				m.dotIdx = (m.dotIdx + 1) % 3
+			}
 		}
-		if m.pendingToolName != "" {
-			m.updateViewportContent()
+		if msg.fast && m.agentRunning {
+			m.spinnerIdx = (m.spinnerIdx + 1) % len(spinnerFrames)
 		}
-		cmds = append(cmds, tickCmd())
+		if msg.fast {
+			cmds = append(cmds, fastTickCmd())
+		} else {
+			cmds = append(cmds, tickCmd())
+		}
 	}
 
 	return m, tea.Batch(cmds...)
@@ -1222,7 +1246,15 @@ func (m tuiModel) View() string {
 	} else if m.questionActive {
 		b.WriteString(m.renderQuestionInput())
 	} else if m.agentRunning {
-		b.WriteString(dimStyle.Render("  ..."))
+		frame := spinnerFrames[m.spinnerIdx%len(spinnerFrames)]
+		root := "generating"
+		if m.thinkingActive {
+			root = "thinking"
+		} else if m.pendingToolName != "" {
+			root = "running " + m.pendingToolName
+		}
+		dots := strings.Repeat(".", m.dotIdx+1)
+		b.WriteString(dimStyle.Render("  " + frame + " " + root + dots))
 	} else {
 		b.WriteString(m.textarea.View())
 	}
