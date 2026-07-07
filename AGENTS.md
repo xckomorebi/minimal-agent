@@ -30,7 +30,7 @@ this way unless there is a compelling reason.
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
-  API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window
+  API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window, custom HTTP headers
 
 ## Coding conventions
 
@@ -67,7 +67,10 @@ Settings configurable via `~/.ma/settings.json`:
   "thinking_effort": "medium",
   "thinking_detail": false,
   "auto_edit": false,
-  "context_window": 200000
+  "context_window": 200000,
+  "extra_http_headers": {
+    "X-Custom-Header": "value"
+  }
 }
 ```
 

@@ -136,12 +136,20 @@ func main() {
 		"https://api.openai.com/v1")
 	url := strings.TrimRight(baseURL, "/") + "/"
 
+	// Build client options, allowing custom headers from the global config.
+	clientOpts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithBaseURL(url),
+		option.WithHeader("User-Agent", "minimal-agent/"+Version),
+	}
+	if cfg := readGlobalCfg(); cfg != nil {
+		for k, v := range cfg.HTTPHeaders {
+			clientOpts = append(clientOpts, option.WithHeader(k, v))
+		}
+	}
+
 	a := &agent{
-		client: openai.NewClient(
-			option.WithAPIKey(apiKey),
-			option.WithBaseURL(url),
-			option.WithHeader("User-Agent", "minimal-agent/"+Version),
-		),
+		client: openai.NewClient(clientOpts...),
 		flagModel:         *modelFlag,
 		flagContextWindow: *contextWindowFlag,
 		sessionName:       resolveSession(*sessionFlag),
