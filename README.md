@@ -10,8 +10,8 @@ written by the agent itself — dogfooding all the way down.
 A Go-based CLI coding agent with a full-screen TUI, built on the
 [openai-go](https://github.com/openai/openai-go) SDK and
 [Bubble Tea](https://github.com/charmbracelet/bubbletea). It has an OpenAI
-Chat Completions tool-calling loop — the agent streams responses, calls tools,
-and can inspect, build, and rewrite itself.
+Chat Completions tool-calling loop — the agent calls the API (streaming by default,
+configurable to non-streaming), calls tools, and can inspect, build, and rewrite itself.
 
 **Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill`
 
@@ -47,7 +47,7 @@ below), or via the `MA_API_KEY` environment variable.
 | `/list-session` | List all saved sessions with summaries |
 | `/re-summarize` | Regenerate the session title |
 | `/config` | Show current configuration and sources |
-| `/config <key> [value]` | Get/set: `model`, `auto-edit`, `thinking`, `thinking-effort`, `thinking-detail`, `context-window` |
+| `/config <key> [value]` | Get/set: `model`, `auto-edit`, `thinking`, `thinking-effort`, `thinking-detail`, `context-window`, `stream` |
 | `/context` | Show token usage vs. context window |
 | `/compact` | Summarize conversation to free context space |
 | `/model <id>` | Shorthand for `/config model` |
@@ -87,7 +87,8 @@ new settings immediately. All keys are optional:
   "thinking_effort": "medium",
   "thinking_detail": false,
   "auto_edit": false,
-  "context_window": 200000
+  "context_window": 200000,
+  "stream": true
 }
 ```
 
@@ -96,6 +97,8 @@ new settings immediately. All keys are optional:
   thinking text is expanded. Toggle at runtime with `Ctrl-O` or `/config thinking-detail`.
 - `context_window`: the token budget for the conversation. When usage approaches
   this limit, use `/compact` to summarize and free space.
+- `stream`: when `true` (default), responses stream token-by-token via SSE.
+  Set to `false` for a single non‑streaming request.
 
 ### Session config
 
@@ -108,6 +111,7 @@ Use `/config` inside the agent to view or toggle per-session settings:
 - `/config auto-edit` — toggle auto-approve for write/edit
 - `/config model <id>` — switch models mid-session
 - `/config context-window <tokens>` — change the context window
+- `/config stream` — toggle between streaming and non‑streaming API calls
 
 The `-url` value is the API base (must include `/v1`); the client appends
 `/chat/completions`. Point it at any OpenAI-compatible gateway:
@@ -120,7 +124,9 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
 
 1. Read input from the TUI textarea. If it starts with `/`, handle as a slash
    command; otherwise treat as a user message appended to the conversation.
-2. POST the history + tool schemas to `/chat/completions` with streaming.
+2. POST the history + tool schemas to `/chat/completions`. By default this uses
+   streaming (SSE); set `"stream": false` in the config to switch to a single
+   non-streaming request.
 3. Stream the assistant text as it arrives, rendering markdown in the viewport.
    Reasoning/thinking content streams in dim italic alongside the response.
 4. For each `tool_calls` entry, display the tool name and details. State-changing

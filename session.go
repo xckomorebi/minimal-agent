@@ -23,6 +23,7 @@ type sessionConfig struct {
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
 	ContextWindow  *int64  `json:"context_window,omitempty"`
+	Stream         *bool   `json:"stream,omitempty"`
 }
 
 // sessionFile is the top-level JSON structure stored in a session file.

@@ -24,6 +24,7 @@ type globalConfig struct {
 	ThinkingDetail *bool             `json:"thinking_detail,omitempty"`
 	AutoEdit       *bool             `json:"auto_edit,omitempty"`
 	ContextWindow  *int64             `json:"context_window,omitempty"`
+	Stream         *bool             `json:"stream,omitempty"`
 	HTTPHeaders    map[string]string  `json:"extra_http_headers,omitempty"`
 	MCPServers     []mcpServerConfig  `json:"mcp_servers,omitempty"`
 }
