@@ -42,7 +42,7 @@ func buildSystemMessage() string {
 	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines.\n")
 	b.WriteString("\n")
 	b.WriteString("State-changing operations (write, edit, destructive bash) require user approval before execution. Read-only operations (read, ls, cat, grep, git status) run immediately.\n")
-	b.WriteString("Responses stream token-by-token over SSE. When you need to think through a problem, use reasoning blocks (shown in dim italic to the user) before your final response or tool calls.\n")
+	b.WriteString("Responses are sent via the chat completions API. By default responses stream token-by-token over SSE; when streaming is disabled, the full response arrives at once. When you need to think through a problem, use reasoning blocks (shown in dim italic to the user) before your final response or tool calls.\n")
 	b.WriteString("Tool call results must always go through openai.ToolMessage(result, call.ID). Sessions auto-save on every turn and on exit.\n")
 	b.WriteString("\n")
 

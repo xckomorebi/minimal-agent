@@ -12,8 +12,8 @@ this way unless there is a compelling reason.
 | File | Responsibility |
 |---|---|
 | `main.go` | Entry point, CLI flags, tool definitions, system prompt, helper utils |
-| `agent.go` | Agent struct, streaming loop, reasoning extraction, token tracking, summary gen, compaction |
-| `commands.go` | Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config`, `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/help`, plus autocomplete |
+| `agent.go` | Agent struct, streaming/non-streaming loop, reasoning extraction, token tracking, summary gen, compaction |
+| `commands.go` | Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config` (including `stream`), `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/help`, plus autocomplete |
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
 | `session.go` | Session load/save/list, auto-resume, summary/token-usage persistence |
@@ -24,13 +24,13 @@ this way unless there is a compelling reason.
 
 - **LLM client**: openai-go SDK (`github.com/openai/openai-go`)
 - **MCP client**: official MCP Go SDK (`github.com/modelcontextprotocol/go-sdk`)
-- **Agent loop**: read user input → append to history → stream response →
+- **Agent loop**: read user input → append to history → send request (streaming or non‑streaming) →
   execute tool calls → repeat
 - **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill` — defined in `main()`, implemented in `tools.go`
 - **Session persistence**: history stored as JSON under `.ma-sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
-  API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window, custom HTTP headers
+  API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window, stream, custom HTTP headers
 
 ## Coding conventions
 
@@ -68,6 +68,7 @@ Settings configurable via `~/.ma/settings.json`:
   "thinking_detail": false,
   "auto_edit": false,
   "context_window": 200000,
+  "stream": true,
   "extra_http_headers": {
     "X-Custom-Header": "value"
   }
@@ -79,6 +80,8 @@ All keys are optional — unset keys fall through to the next priority level.
 - `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
   window and collapses to "thought about it" when done. When `true`, the full
   thinking text is expanded in the output.
+- `stream`: when `true` (default), responses stream token-by-token over SSE.
+  When `false`, responses arrive in a single non-streaming request.
 
 ## MCP (Model Context Protocol) Support
 
@@ -128,6 +131,5 @@ package and place them in `main_test.go`.
 - **Minimal**: one binary, no frameworks, minimal dependencies (openai-go SDK + Bubble Tea + glamour + fsnotify)
 - **Dogfooding**: the agent writes its own code — all commits after the first
   were authored by the agent itself
-- **Streaming-first**: responses stream over SSE; the accumulator pattern gathers
-  chunks and converts to a final message for history
+- **Streaming-first**: responses stream over SSE by default (configurable via `stream` setting); the accumulator pattern gathers chunks and converts to a final message for history
 - **TUI**: full-screen terminal UI with viewport scrolling, markdown rendering, approval prompts, interactive session picker, and slash-command autocomplete
