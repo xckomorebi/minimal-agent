@@ -13,7 +13,7 @@ A Go-based CLI coding agent with a full-screen TUI, built on the
 Chat Completions tool-calling loop — the agent calls the API (streaming by default,
 configurable to non-streaming), calls tools, and can inspect, build, and rewrite itself.
 
-**Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill`
+**Tools:** `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill`, `ask_user_question`, plus any tools exposed by [MCP servers](#mcp-support)
 
 **Features:**
 - Full-screen TUI with markdown rendering, viewport scrolling, and colored diff previews
@@ -27,7 +27,17 @@ configurable to non-streaming), calls tools, and can inspect, build, and rewrite
 
 ## Run
 
+**Install:**
+
 ```sh
+go install github.com/xckomorebi/minimal-agent@latest
+```
+
+**Or build from source:**
+
+```sh
+git clone https://github.com/xckomorebi/minimal-agent.git
+cd minimal-agent
 go build -o minimal-agent .
 MA_API_KEY=sk-... ./minimal-agent
 ```
@@ -159,6 +169,35 @@ frontmatter `description` fields. The index is included in the system prompt so
 the model knows what's available. Use the `skill("name")` tool to load a skill's
 full instructions on demand — they're injected as a tool result and the agent
 follows them from that point on. `skill("list")` enumerates all available skills.
+
+## MCP (Model Context Protocol)
+
+minimal-agent can connect to MCP servers to access external tools. Configure
+servers in `~/.ma/settings.json` under the `mcp_servers` key:
+
+```json
+{
+  "mcp_servers": [
+    {
+      "name": "filesystem",
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    {
+      "name": "remote-api",
+      "url": "http://localhost:3000/mcp"
+    }
+  ]
+}
+```
+
+Two transport modes:
+
+- **stdio** (`command` + `args`): spawns the server as a subprocess and communicates over stdin/stdout.
+- **streamable HTTP** (`url`): connects to an already-running MCP server over HTTP (MCP 2025-03-26 streamable transport).
+
+MCP tools are namespaced as `mcp.<server>.<tool>` (e.g. `mcp.filesystem.read_file`)
+and require user approval by default since they come from external sources.
 
 ## Keyboard shortcuts
 

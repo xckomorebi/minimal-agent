@@ -3,8 +3,8 @@
 1. **Editing experience** — undo after applying edits.
 2. **UI improvement** — syntax highlighting in code blocks.
 3. **External tools** — let the agent run user-defined scripts or call web APIs.
-4. **Skills** — reusable prompt templates for common tasks like code review.
-5. **Auto-approve mode** — a `-y` flag to skip confirmation prompts.
+4. ~~**Skills** — reusable prompt templates for common tasks like code review.~~ ✓ done: `~/.agents/skills/` with startup index and on-demand loading
+5. ~~**Auto-approve mode** — a `-y` flag to skip confirmation prompts.~~ ✓ done: `/config auto-edit`
 6. **Context awareness** — auto-detect project type and respect `.gitignore`.
 7. ~~**Session history** — save and reload past conversations.~~ ✓ done: `.ma-sessions/` with auto-save, auto-resume, picker, and summarization
 8. ~~**Configuration file** — a simple config file for API keys, model, and preferences.~~ ✓ done: `~/.ma/settings.json` with hot-reload via fsnotify
