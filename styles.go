@@ -225,6 +225,7 @@ func bannerLines(a *agent) []string {
 		titleChip,
 		"",
 		row("model", a.effectiveModel()),
+		row("version", Version),
 		row("session", a.sessionName),
 	)
 

@@ -140,6 +140,7 @@ func main() {
 		client: openai.NewClient(
 			option.WithAPIKey(apiKey),
 			option.WithBaseURL(url),
+			option.WithHeader("User-Agent", "minimal-agent/"+Version),
 		),
 		flagModel:         *modelFlag,
 		flagContextWindow: *contextWindowFlag,

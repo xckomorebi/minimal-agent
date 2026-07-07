@@ -49,7 +49,7 @@ func connectMCPServers(ctx context.Context, configs []mcpServerConfig) {
 
 // connectOneMCPServer connects to a single MCP server and discovers its tools.
 func connectOneMCPServer(ctx context.Context, cfg mcpServerConfig) (*connectedMCPServer, error) {
-	client := mcp.NewClient(&mcp.Implementation{Name: "minimal-agent", Version: "1.0.0"}, nil)
+	client := mcp.NewClient(&mcp.Implementation{Name: "minimal-agent", Version: Version}, nil)
 
 	transport, err := mcpTransport(ctx, cfg)
 	if err != nil {
