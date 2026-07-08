@@ -13,7 +13,7 @@ this way unless there is a compelling reason.
 |---|---|
 | `main.go` | Entry point, CLI flags, tool definitions, system prompt, helper utils |
 | `agent.go` | Agent struct, streaming/non-streaming loop, reasoning extraction, token tracking, summary gen, compaction |
-| `commands.go` | Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config` (including `stream`), `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/help`, plus autocomplete |
+| `commands.go` | Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config` (including `stream`), `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/profile`, `/help`, plus autocomplete |
 | `config.go` | Global config file, fsnotify watcher, priority-chain resolution |
 | `messages.go` | `cleanHistory`, `isEmptyMessage` |
 | `session.go` | Session load/save/list, auto-resume, summary/token-usage persistence |
@@ -51,7 +51,7 @@ MA_API_KEY=sk-... ./minimal-agent
 
 ## Configuration priority (highest to lowest)
 
-1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-session`, `-new`, `-context-window`)
+1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-profile`, `-session`, `-new`, `-context-window`)
 2. Session config (`/config` commands, stored in `.ma-sessions/<name>.json`)
 3. Global config file (`~/.ma/settings.json`, JSON, watched via fsnotify)
 4. Environment variables (`MA_API_KEY`, `MA_BASE_URL`, `MA_MODEL`, `MA_CONTEXT_WINDOW`)
@@ -71,11 +71,34 @@ Settings configurable via `~/.ma/settings.json`:
   "stream": true,
   "extra_http_headers": {
     "X-Custom-Header": "value"
+  },
+  "profile": "deepseek",
+  "profiles": {
+    "deepseek": {
+      "api_key": "sk-...",
+      "base_url": "https://api.deepseek.com/v1",
+      "model": "deepseek-chat"
+    },
+    "glm": {
+      "api_key": "...",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "model": "glm-4-plus"
+    }
   }
 }
 ```
 
 All keys are optional — unset keys fall through to the next priority level.
+
+- `profile`: name of the profile to activate. When set, the corresponding
+  entry in `profiles` is used as the first source for `api_key`, `base_url`,
+  `model`, `thinking`, `thinking_effort`, `thinking_detail`, `auto_edit`,
+  `context_window`, `stream`, and `extra_http_headers`. Any field not set in
+  the profile falls through to the top-level setting, then to lower layers.
+  Can also be set per-invocation via `-profile` flag or switched at runtime
+  via `/profile <name>`.
+- `profiles`: map of named profile configs. Each profile can define any subset
+  of the same fields as the top-level config (except `profiles` itself).
 
 - `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
   window and collapses to "thought about it" when done. When `true`, the full

@@ -104,8 +104,13 @@ func (a *agent) effectiveModel() string {
 	if a.config.Model != nil && *a.config.Model != "" {
 		return *a.config.Model
 	}
-	if c := readGlobalCfg(); c != nil && c.Model != nil && *c.Model != "" {
-		return *c.Model
+	if c := readGlobalCfg(); c != nil {
+		if pm := c.profileModel(); pm != "" {
+			return pm
+		}
+		if c.Model != nil && *c.Model != "" {
+			return *c.Model
+		}
 	}
 	if m := os.Getenv("MA_MODEL"); m != "" {
 		return m
@@ -120,8 +125,13 @@ func (a *agent) contextWindow() int64 {
 	if a.config.ContextWindow != nil && *a.config.ContextWindow > 0 {
 		return *a.config.ContextWindow
 	}
-	if c := readGlobalCfg(); c != nil && c.ContextWindow != nil && *c.ContextWindow > 0 {
-		return *c.ContextWindow
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.ContextWindow != nil && *p.ContextWindow > 0 {
+			return *p.ContextWindow
+		}
+		if c.ContextWindow != nil && *c.ContextWindow > 0 {
+			return *c.ContextWindow
+		}
 	}
 	if s := os.Getenv("MA_CONTEXT_WINDOW"); s != "" {
 		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
@@ -135,8 +145,13 @@ func (a *agent) autoEdit() bool {
 	if a.config.AutoEdit != nil {
 		return *a.config.AutoEdit
 	}
-	if c := readGlobalCfg(); c != nil && c.AutoEdit != nil {
-		return *c.AutoEdit
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.AutoEdit != nil {
+			return *p.AutoEdit
+		}
+		if c.AutoEdit != nil {
+			return *c.AutoEdit
+		}
 	}
 	return false
 }
@@ -145,8 +160,13 @@ func (a *agent) stream() bool {
 	if a.config.Stream != nil {
 		return *a.config.Stream
 	}
-	if c := readGlobalCfg(); c != nil && c.Stream != nil {
-		return *c.Stream
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.Stream != nil {
+			return *p.Stream
+		}
+		if c.Stream != nil {
+			return *c.Stream
+		}
 	}
 	return true
 }
@@ -155,8 +175,13 @@ func (a *agent) thinking() bool {
 	if a.config.Thinking != nil {
 		return *a.config.Thinking
 	}
-	if c := readGlobalCfg(); c != nil && c.Thinking != nil {
-		return *c.Thinking
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.Thinking != nil {
+			return *p.Thinking
+		}
+		if c.Thinking != nil {
+			return *c.Thinking
+		}
 	}
 	return true
 }
@@ -180,6 +205,11 @@ func (a *agent) thinkingEffort() shared.ReasoningEffort {
 		return v
 	}
 	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil {
+			if v, ok := resolve(p.ThinkingEffort); ok {
+				return v
+			}
+		}
 		if v, ok := resolve(c.ThinkingEffort); ok {
 			return v
 		}
@@ -191,8 +221,13 @@ func (a *agent) thinkingDetail() bool {
 	if a.config.ThinkingDetail != nil {
 		return *a.config.ThinkingDetail
 	}
-	if c := readGlobalCfg(); c != nil && c.ThinkingDetail != nil {
-		return *c.ThinkingDetail
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.ThinkingDetail != nil {
+			return *p.ThinkingDetail
+		}
+		if c.ThinkingDetail != nil {
+			return *c.ThinkingDetail
+		}
 	}
 	return false
 }

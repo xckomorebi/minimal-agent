@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
@@ -27,6 +28,96 @@ type globalConfig struct {
 	Stream         *bool             `json:"stream,omitempty"`
 	HTTPHeaders    map[string]string  `json:"extra_http_headers,omitempty"`
 	MCPServers     []mcpServerConfig  `json:"mcp_servers,omitempty"`
+	Profile        *string           `json:"profile,omitempty"`
+	Profiles       map[string]profileConfig `json:"profiles,omitempty"`
+}
+
+// profileConfig is a named bundle of provider settings. When a profile is
+// active (via the "profile" key or -profile flag), its non-nil fields override
+// the top-level globalConfig fields of the same name.
+type profileConfig struct {
+	APIKey        *string           `json:"api_key,omitempty"`
+	BaseURL       *string           `json:"base_url,omitempty"`
+	Model         *string           `json:"model,omitempty"`
+	Thinking      *bool             `json:"thinking,omitempty"`
+	ThinkingEffort *string          `json:"thinking_effort,omitempty"`
+	ThinkingDetail *bool            `json:"thinking_detail,omitempty"`
+	AutoEdit      *bool             `json:"auto_edit,omitempty"`
+	ContextWindow *int64            `json:"context_window,omitempty"`
+	Stream        *bool             `json:"stream,omitempty"`
+	HTTPHeaders   map[string]string `json:"extra_http_headers,omitempty"`
+}
+
+// resolvedProfile returns the profileConfig for the active profile, or nil if
+// no profile is active or the named profile doesn't exist.
+func (cfg *globalConfig) resolvedProfile() *profileConfig {
+	if cfg == nil || cfg.Profile == nil || *cfg.Profile == "" {
+		return nil
+	}
+	if p, ok := cfg.Profiles[*cfg.Profile]; ok {
+		return &p
+	}
+	return nil
+}
+
+// profileAPIKey resolves the effective API key, consulting the active profile first.
+func (cfg *globalConfig) profileAPIKey() string {
+	if p := cfg.resolvedProfile(); p != nil && p.APIKey != nil {
+		return *p.APIKey
+	}
+	if cfg.APIKey != nil {
+		return *cfg.APIKey
+	}
+	return ""
+}
+
+// profileBaseURL resolves the effective base URL, consulting the active profile first.
+func (cfg *globalConfig) profileBaseURL() string {
+	if p := cfg.resolvedProfile(); p != nil && p.BaseURL != nil {
+		return *p.BaseURL
+	}
+	if cfg.BaseURL != nil {
+		return *cfg.BaseURL
+	}
+	return ""
+}
+
+// profileModel resolves the effective model, consulting the active profile first.
+func (cfg *globalConfig) profileModel() string {
+	if p := cfg.resolvedProfile(); p != nil && p.Model != nil {
+		return *p.Model
+	}
+	if cfg.Model != nil {
+		return *cfg.Model
+	}
+	return ""
+}
+
+// profileHTTPHeaders merges the active profile's headers over the global ones.
+func (cfg *globalConfig) profileHTTPHeaders() map[string]string {
+	out := make(map[string]string)
+	for k, v := range cfg.HTTPHeaders {
+		out[k] = v
+	}
+	if p := cfg.resolvedProfile(); p != nil {
+		for k, v := range p.HTTPHeaders {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+// profileNames returns the sorted names of all defined profiles.
+func (cfg *globalConfig) profileNames() []string {
+	if cfg == nil {
+		return nil
+	}
+	names := make([]string, 0, len(cfg.Profiles))
+	for n := range cfg.Profiles {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // mcpServerConfig describes an MCP server to connect to on startup.

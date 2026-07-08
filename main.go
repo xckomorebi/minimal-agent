@@ -117,6 +117,7 @@ func main() {
 	apiKeyFlag := flag.String("ma-api-key", "", "MA API key")
 	baseURLFlag := flag.String("url", "", "API base URL")
 	modelFlag := flag.String("model", "", "model id")
+	profileFlag := flag.String("profile", "", "profile name from settings.json")
 	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
 	newFlag := flag.Bool("new", false, "start a new session instead of auto-resuming")
 	contextWindowFlag := flag.Int64("context-window", 0, "context window size in tokens (default 200000)")
@@ -125,6 +126,14 @@ func main() {
 	globalMu.Lock()
 	globalCfg = loadGlobalConfig()
 	globalMu.Unlock()
+
+	// If a profile is given on the command line, activate it in the in-memory
+	// config so all resolution paths pick it up. We don't write it to disk —
+	// the flag is per-invocation.
+	if *profileFlag != "" && globalCfg != nil {
+		p := *profileFlag
+		globalCfg.Profile = &p
+	}
 
 	if err := startConfigWatcher(); err != nil {
 		fmt.Fprintln(os.Stderr, "config watcher:", err)
@@ -136,6 +145,11 @@ func main() {
 	apiKey := firstNonEmpty(*apiKeyFlag,
 		cfgStr(globalCfg, func(c *globalConfig) *string { return c.APIKey }),
 		os.Getenv("MA_API_KEY"))
+	if globalCfg != nil {
+		if pk := globalCfg.profileAPIKey(); pk != "" {
+			apiKey = firstNonEmpty(*apiKeyFlag, pk, os.Getenv("MA_API_KEY"))
+		}
+	}
 	if apiKey == "" {
 		fmt.Fprintln(os.Stderr, "no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -ma-api-key")
 		os.Exit(1)
@@ -145,6 +159,11 @@ func main() {
 		cfgStr(globalCfg, func(c *globalConfig) *string { return c.BaseURL }),
 		os.Getenv("MA_BASE_URL"),
 		"https://api.openai.com/v1")
+	if globalCfg != nil {
+		if pb := globalCfg.profileBaseURL(); pb != "" {
+			baseURL = firstNonEmpty(*baseURLFlag, pb, os.Getenv("MA_BASE_URL"), "https://api.openai.com/v1")
+		}
+	}
 	url := strings.TrimRight(baseURL, "/") + "/"
 
 	// Build client options, allowing custom headers from the global config.
@@ -154,7 +173,7 @@ func main() {
 		option.WithHeader("User-Agent", "minimal-agent/"+Version),
 	}
 	if cfg := readGlobalCfg(); cfg != nil {
-		for k, v := range cfg.HTTPHeaders {
+		for k, v := range cfg.profileHTTPHeaders() {
 			clientOpts = append(clientOpts, option.WithHeader(k, v))
 		}
 	}
