@@ -949,6 +949,9 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.push(roleAgent, dimStyle.Render("  [canceled]"))
 		} else {
 			m.push(roleAgent, renderError(msg.Error()))
+			if p := logPathIfWritten(); p != "" {
+				m.push(roleAgent, dimStyle.Render("  details logged to "+p))
+			}
 		}
 		// Save now so the user message (and any partial assistant+tools
 		// already appended before cancel) is persisted.

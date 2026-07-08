@@ -127,6 +127,8 @@ func main() {
 	globalCfg = loadGlobalConfig()
 	globalMu.Unlock()
 
+	setupLogger()
+
 	// If a profile is given on the command line, activate it in the in-memory
 	// config so all resolution paths pick it up. We don't write it to disk —
 	// the flag is per-invocation.
@@ -233,10 +235,12 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		closeMCPServers()
+		closeLogger()
 		os.Exit(1)
 	}
 
 	// Save on clean exit.
 	a.autoSave()
 	closeMCPServers()
+	closeLogger()
 }

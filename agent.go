@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -315,6 +316,7 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 		}
 
 		if err := stream.Err(); err != nil {
+			slog.Error("LLM stream failed", "model", a.effectiveModel(), errAttrs(err))
 			a.sendCritical(turnErrMsg{err})
 			return
 		}
@@ -354,6 +356,7 @@ func (a *agent) doTurnNonStreaming(ctx context.Context) {
 		params := a.buildCompletionParams()
 		completion, err := a.client.Chat.Completions.New(ctx, params)
 		if err != nil {
+			slog.Error("LLM completion failed", "model", a.effectiveModel(), errAttrs(err))
 			a.sendCritical(turnErrMsg{err})
 			return
 		}
@@ -713,6 +716,7 @@ func (a *agent) generateSessionSummary(userText string) {
 
 	completion, err := a.client.Chat.Completions.New(ctx, params)
 	if err != nil {
+		slog.Error("session summary failed", "model", a.effectiveModel(), errAttrs(err))
 		return // silently fail; summary is a best-effort feature
 	}
 	if len(completion.Choices) == 0 {
@@ -783,6 +787,7 @@ func (a *agent) compactHistory() {
 
 	completion, err := a.client.Chat.Completions.New(ctx, params)
 	if err != nil {
+		slog.Error("history compaction failed", "model", a.effectiveModel(), errAttrs(err))
 		a.sendCritical(turnErrMsg{fmt.Errorf("compact failed: %w", err)})
 		return
 	}
