@@ -1267,13 +1267,14 @@ func (m tuiModel) View() string {
 
 // renderPicker renders the session picker popup as a bordered box.
 func (m *tuiModel) renderPicker() string {
-	// Determine box width: longest name + summary + padding.
+	// Determine box width: longest label + padding.
 	maxLine := 0
 	for _, it := range m.picker.items {
-		lineLen := len(it.name)
-		if it.summary != "" {
-			lineLen += 3 + len(it.summary) // " ‒ summary"
+		label := it.summary
+		if label == "" {
+			label = it.name
 		}
+		lineLen := len(label)
 		if lineLen > maxLine {
 			maxLine = lineLen
 		}
@@ -1295,12 +1296,14 @@ func (m *tuiModel) renderPicker() string {
 		if i == m.picker.selected {
 			marker = "> "
 		}
-		label := it.name
+		var label string
+		if it.summary != "" {
+			label = it.summary
+		} else {
+			label = dimStyle.Render(it.name)
+		}
 		if it.current {
 			label = lipgloss.NewStyle().Underline(true).Render(label)
-		}
-		if it.summary != "" {
-			label += dimStyle.Render(" ‒ " + it.summary)
 		}
 		line := marker + label
 		// Pad to innerWidth.

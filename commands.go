@@ -159,7 +159,7 @@ func cmdNewSession(a *agent, parts []string) string {
 	if len(parts) > 1 {
 		name = parts[1]
 	} else {
-		name = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+		name = time.Now().Format("20060102-150405")
 	}
 	a.autoSave()
 	a.history = []openai.ChatCompletionMessageParamUnion{
@@ -595,15 +595,7 @@ func autocompleteCommand(input string, cursorPos int) []string {
 			effortArgs = effortArgs[:len(effortArgs)-1]
 		}
 		return autocompleteConfigArg(append([]string{"thinking-effort"}, effortArgs...), trailingSpace)
-	case "save":
-		if len(parts) == 2 {
-			return filterPrefix(parts[1], allSessionNames())
-		}
-		return nil
-	case "resume":
-		if len(parts) == 2 {
-			return filterPrefix(parts[1], allSessionNames())
-		}
+	case "save", "resume":
 		return nil
 	case "mcp":
 		mcpArgs := parts[1:]
@@ -724,11 +716,4 @@ func filterPrefix(prefix string, candidates []string) []string {
 		}
 	}
 	return result
-}
-
-// allSessionNames returns the names of all saved sessions (no directory listing
-// error handling — errors are swallowed and an empty slice returned).
-func allSessionNames() []string {
-	names, _ := listSessions()
-	return names
 }
