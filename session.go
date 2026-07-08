@@ -23,7 +23,6 @@ type sessionConfig struct {
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
-	ContextWindow  *int64  `json:"context_window,omitempty"`
 	Stream         *bool   `json:"stream,omitempty"`
 }
 
@@ -145,14 +144,11 @@ func listSessions() ([]string, error) {
 }
 
 // resolveSession figures out which session to start with: the one given on the
-// command line, the one from MA_SESSION env, or the most recent.
+// command line, or the most recent.
 // Returns "" if no session exists and nothing was explicitly requested.
 func resolveSession(explicit string) string {
 	if explicit != "" {
 		return explicit
-	}
-	if env := os.Getenv("MA_SESSION"); env != "" {
-		return env
 	}
 	names, _ := listSessions()
 	if len(names) > 0 {

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"time"
 
@@ -123,20 +122,12 @@ func (a *agent) contextWindow() int64 {
 	if a.flagContextWindow > 0 {
 		return a.flagContextWindow
 	}
-	if a.config.ContextWindow != nil && *a.config.ContextWindow > 0 {
-		return *a.config.ContextWindow
-	}
 	if c := readGlobalCfg(); c != nil {
 		if p := c.resolvedProfile(); p != nil && p.ContextWindow != nil && *p.ContextWindow > 0 {
 			return *p.ContextWindow
 		}
 		if c.ContextWindow != nil && *c.ContextWindow > 0 {
 			return *c.ContextWindow
-		}
-	}
-	if s := os.Getenv("MA_CONTEXT_WINDOW"); s != "" {
-		if n, err := strconv.ParseInt(s, 10, 64); err == nil && n > 0 {
-			return n
 		}
 	}
 	return 200000

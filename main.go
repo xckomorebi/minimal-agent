@@ -115,11 +115,11 @@ func gitBranch() string {
 }
 
 func main() {
-	apiKeyFlag := flag.String("ma-api-key", "", "MA API key")
-	baseURLFlag := flag.String("url", "", "API base URL")
+	apiKeyFlag := flag.String("api-key", "", "API key")
+	baseURLFlag := flag.String("base-url", "", "API base URL")
 	modelFlag := flag.String("model", "", "model id")
 	profileFlag := flag.String("profile", "", "profile name from settings.json")
-	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
+	sessionFlag := flag.String("session", "", "session name; default: auto-resume")
 	newFlag := flag.Bool("new", false, "start a new session instead of auto-resuming")
 	contextWindowFlag := flag.Int64("context-window", 0, "context window size in tokens (default 200000)")
 	debugFlag := flag.Bool("debug", false, "enable debug logging to temp file")
@@ -159,7 +159,7 @@ func main() {
 		}
 	}
 	if apiKey == "" {
-		fmt.Fprintln(os.Stderr, "no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -ma-api-key")
+		fmt.Fprintln(os.Stderr, "no API key; set MA_API_KEY, add it to ~/.ma/settings.json, or pass -api-key")
 		os.Exit(1)
 	}
 
