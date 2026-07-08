@@ -201,7 +201,7 @@ func main() {
 		a.sessionName = "" // force fresh timestamped session
 	}
 	if a.sessionName == "" {
-		a.sessionName = fmt.Sprintf("session-%s", time.Now().Format("20060102-150405"))
+		a.sessionName = time.Now().Format("20060102-150405")
 	} else if err := a.loadSession(a.sessionName); err != nil {
 		// Session file gone or corrupt — start fresh under the same name.
 	}
