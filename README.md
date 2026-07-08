@@ -144,7 +144,7 @@ go run . -url https://my-gateway.example.com/v1 -model gpt-4o
    (showing a unified diff for write/edit). Read-only tools run immediately.
 5. Feed each tool result back as a `role: "tool"` message.
 6. Repeat until the model returns a message with no tool calls.
-7. The session auto-saves to `.ma-sessions/<name>.json` after each turn.
+7. The session auto-saves to `.ma/sessions/<name>.json` after each turn.
 
 The system prompt is built dynamically at startup, injecting the current working
 directory, git branch, the contents of `AGENTS.md` (if present), and an index of
@@ -212,7 +212,7 @@ and require user approval by default since they come from external sources.
 ## Directory layout
 
 ```
-.ma-sessions/          — session JSON files (auto-created)
+.ma/sessions/          — session JSON files (auto-created)
 ~/.ma/settings.json    — global config (optional, hot-reloaded)
 ~/.agents/skills/      — skill files (optional, indexed at startup)
 go.mod / go.sum        — Go module dependencies

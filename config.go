@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -202,11 +203,13 @@ func startConfigWatcher() error {
 					globalMu.Lock()
 					globalCfg = loadGlobalConfig()
 					globalMu.Unlock()
+					slog.Debug("config file reloaded", "path", path)
 				}
 			case err, ok := <-w.Errors:
 				if !ok {
 					return
 				}
+				slog.Error("config watcher error", "error", err)
 				fmt.Fprintf(os.Stderr, "config watcher error: %s\n", err.Error())
 			}
 		}

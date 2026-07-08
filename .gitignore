@@ -1,5 +1,5 @@
 # Binary executable
 minimal-agent
 
-# Session storage
-.ma-sessions/
+# Project-level agent data
+.ma/

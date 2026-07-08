@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -12,7 +13,7 @@ import (
 	"github.com/openai/openai-go"
 )
 
-const sessionDir = ".ma-sessions"
+const sessionDir = ".ma/sessions"
 
 // sessionConfig holds per-session overrides. Fields use pointers so that
 // unset keys (nil) are omitted from JSON and fall through to global defaults.
@@ -45,6 +46,7 @@ func (a *agent) saveSession() error {
 	if err := os.MkdirAll(sessionDir, 0755); err != nil {
 		return err
 	}
+	slog.Debug("saving session", "name", a.sessionName, "msg_count", len(a.history))
 	sf := sessionFile{
 		Config:      a.config,
 		History:     a.history,
@@ -88,6 +90,7 @@ func (a *agent) loadSession(name string) error {
 		if a.summary != "" {
 			a.summaryGenerated = true
 		}
+		slog.Debug("session loaded", "name", name, "msg_count", len(a.history), "summary", a.summary)
 		return nil
 	}
 
@@ -159,12 +162,13 @@ func resolveSession(explicit string) string {
 }
 
 // autoSave saves the session if it has changed since the last save.
-// Silent in TUI mode — errors go to stderr.
+// Errors go to stderr (for TUI visibility) and to the log file.
 func (a *agent) autoSave() {
 	if !a.sessionDirty {
 		return
 	}
 	if err := a.saveSession(); err != nil {
+		slog.Error("auto-save failed", "session", a.sessionName, "error", err)
 		fmt.Fprintln(os.Stderr, "auto-save failed:", err)
 	}
 }

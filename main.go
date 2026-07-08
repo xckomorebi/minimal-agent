@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -121,7 +122,12 @@ func main() {
 	sessionFlag := flag.String("session", "", "session name (or MA_SESSION env); default: auto-resume")
 	newFlag := flag.Bool("new", false, "start a new session instead of auto-resuming")
 	contextWindowFlag := flag.Int64("context-window", 0, "context window size in tokens (default 200000)")
+	debugFlag := flag.Bool("debug", false, "enable debug logging to temp file")
 	flag.Parse()
+
+	if *debugFlag {
+		SetLogLevel(slog.LevelDebug)
+	}
 
 	globalMu.Lock()
 	globalCfg = loadGlobalConfig()
@@ -199,6 +205,15 @@ func main() {
 	} else if err := a.loadSession(a.sessionName); err != nil {
 		// Session file gone or corrupt — start fresh under the same name.
 	}
+
+	slog.Debug("minimal-agent starting",
+		"version", Version,
+		"session", a.sessionName,
+		"model", a.effectiveModel(),
+		"base_url", url,
+		"stream", a.stream(),
+		"context_window", a.contextWindow(),
+	)
 
 	// Connect to MCP servers asynchronously so startup is never blocked.
 	if globalCfg != nil && len(globalCfg.MCPServers) > 0 {

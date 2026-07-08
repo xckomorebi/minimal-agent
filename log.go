@@ -8,11 +8,26 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/openai/openai-go"
 )
 
 const logFileName = "minimal-agent.log"
+
+// logLevel holds the minimum slog level that will be written to the log file.
+// The default (LevelWarn) keeps logs quiet; use SetLogLevel(LevelInfo) to
+// enable informational messages via the -log CLI flag.
+var logLevel atomic.Int32
+
+func init() {
+	logLevel.Store(int32(slog.LevelWarn))
+}
+
+// SetLogLevel changes the minimum log level. Call before any logging occurs.
+func SetLogLevel(level slog.Level) {
+	logLevel.Store(int32(level))
+}
 
 // logFilePath returns the log location in the system temp directory
 // (e.g. $TMPDIR/minimal-agent.log on macOS, /tmp/minimal-agent.log on Linux).
@@ -42,7 +57,7 @@ func (h *lazyFileHandler) open() {
 }
 
 func (h *lazyFileHandler) Enabled(_ context.Context, level slog.Level) bool {
-	return level >= slog.LevelInfo
+	return level >= slog.Level(logLevel.Load())
 }
 
 func (h *lazyFileHandler) Handle(ctx context.Context, r slog.Record) error {

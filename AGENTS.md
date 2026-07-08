@@ -27,7 +27,7 @@ this way unless there is a compelling reason.
 - **Agent loop**: read user input → append to history → send request (streaming or non‑streaming) →
   execute tool calls → repeat
 - **Tools**: `bash`, `read`, `write`, `edit`, `web-search`, `web-fetch`, `skill` — defined in `main()`, implemented in `tools.go`
-- **Session persistence**: history stored as JSON under `.ma-sessions/`;
+- **Session persistence**: history stored as JSON under `.ma/sessions/`;
   auto-save on each turn and on exit; auto-resume on startup
 - **Global config**: `~/.ma/settings.json` (JSON, watched via fsnotify) —
   API key, base URL, model, thinking, effort level, thinking detail, auto-edit, context window, stream, custom HTTP headers
@@ -52,7 +52,7 @@ MA_API_KEY=sk-... ./minimal-agent
 ## Configuration priority (highest to lowest)
 
 1. CLI flags (`-ma-api-key`, `-url`, `-model`, `-profile`, `-session`, `-new`, `-context-window`)
-2. Session config (`/config` commands, stored in `.ma-sessions/<name>.json`)
+2. Session config (`/config` commands, stored in `.ma/sessions/<name>.json`)
 3. Global config file (`~/.ma/settings.json`, JSON, watched via fsnotify)
 4. Environment variables (`MA_API_KEY`, `MA_BASE_URL`, `MA_MODEL`, `MA_CONTEXT_WINDOW`)
 

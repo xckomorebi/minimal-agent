@@ -325,6 +325,7 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 		a.tokenUsage.Prompt = u.PromptTokens
 		a.tokenUsage.Completion = u.CompletionTokens
 		a.tokenUsage.Total = u.TotalTokens
+		slog.Debug("turn complete", "prompt", u.PromptTokens, "completion", u.CompletionTokens, "total", u.TotalTokens)
 		if len(acc.Choices) == 0 {
 			a.sendCritical(turnErrMsg{fmt.Errorf("empty response (no choices)")})
 			return
@@ -365,6 +366,7 @@ func (a *agent) doTurnNonStreaming(ctx context.Context) {
 		a.tokenUsage.Prompt = u.PromptTokens
 		a.tokenUsage.Completion = u.CompletionTokens
 		a.tokenUsage.Total = u.TotalTokens
+		slog.Debug("turn complete", "prompt", u.PromptTokens, "completion", u.CompletionTokens, "total", u.TotalTokens)
 
 		if len(completion.Choices) == 0 {
 			a.sendCritical(turnErrMsg{fmt.Errorf("empty response (no choices)")})
@@ -740,6 +742,7 @@ func (a *agent) generateSessionSummary(userText string) {
 // message + summary-as-user + assistant acknowledgment. Runs in a goroutine
 // and communicates results back to the TUI via the msgCh.
 func (a *agent) compactHistory() {
+	slog.Debug("compaction starting", "msg_count", len(a.history))
 	// Save the system message (always the first message).
 	sysMsg := a.history[0]
 
@@ -824,5 +827,6 @@ func (a *agent) compactHistory() {
 	newCount := len(a.history)
 	result := fmt.Sprintf("compacted %d messages → %d messages", oldCount, newCount)
 
+	slog.Debug("compaction complete", "old_count", oldCount, "new_count", newCount, "summary_tokens", u.CompletionTokens)
 	a.sendCritical(compactDoneMsg{result: result})
 }

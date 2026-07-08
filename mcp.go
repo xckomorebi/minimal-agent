@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -37,8 +38,10 @@ func connectMCPServers(ctx context.Context, configs []mcpServerConfig) {
 	for _, cfg := range configs {
 		cs, err := connectOneMCPServer(ctx, cfg)
 		if err != nil {
+			slog.Debug("MCP server connection failed", "server", cfg.Name, "error", err)
 			continue
 		}
+		slog.Debug("MCP server connected", "server", cfg.Name, "tools", len(cs.tools))
 		activeMCPServers = append(activeMCPServers, cs)
 
 		for _, t := range cs.tools {
@@ -216,6 +219,8 @@ func (a *agent) runMCPTool(ctx context.Context, call openai.ChatCompletionMessag
 	if cs == nil {
 		return openai.ToolMessage("error: MCP tool not found: "+call.Function.Name, call.ID)
 	}
+
+	slog.Debug("MCP tool call", "server", cs.config.Name, "tool", toolName)
 
 	// Parse arguments from the JSON string.
 	var args any

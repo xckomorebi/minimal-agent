@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -110,6 +111,7 @@ func buildSkillIndex() {
 		idx = append(idx, se)
 	}
 	skillIndex = idx
+	slog.Debug("skill index built", "count", len(idx))
 }
 
 // parseSkillFrontmatter extracts the "description" field from YAML frontmatter
@@ -233,6 +235,7 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 			}
 			result += "\n[exit: " + err.Error() + "]"
 		}
+		slog.Debug("bash completed", "command", args.Command, "output_len", len(result))
 		if result == "" {
 			result = "(no output)"
 		}
@@ -287,6 +290,7 @@ func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) (openai.Cha
 		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
 	a.rememberFile(args.Path)
+	slog.Debug("write completed", "path", args.Path, "bytes", len(args.Content))
 	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID), false
 }
 
@@ -325,6 +329,7 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.Chat
 		return openai.ToolMessage("error: "+err.Error(), call.ID), false
 	}
 	a.rememberFile(args.Path)
+	slog.Debug("edit completed", "path", args.Path, "old_len", len(args.OldString), "new_len", len(args.NewString))
 	return openai.ToolMessage("edited "+args.Path, call.ID), false
 }
 

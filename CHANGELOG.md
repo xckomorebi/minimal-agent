@@ -44,7 +44,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slash commands: `/save`, `/resume`, `/new-session`, `/list-session`, `/re-summarize`, `/config`, `/context`, `/compact`, `/model`, `/thinking`, `/effort`, `/help`, `/clear`.
 - Slash-command autocomplete with session picker.
 - Global config file (`~/.ma/settings.json`) with fsnotify hot-reload.
-- Session persistence (JSON under `.ma-sessions/`) with auto-save and auto-resume.
+- Session persistence (JSON under `.ma/sessions/`) with auto-save and auto-resume.
 - Multi-line input with `\` continuation.
 - Token tracking, context window config, and `/compact` command for history compaction.
 - Dynamic system prompt with cwd, git branch, and AGENTS.md injection.
