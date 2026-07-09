@@ -209,20 +209,18 @@ func autocompleteFileMention(input string) []string {
 	return searchFiles(query)
 }
 
-// searchFiles recursively searches for files under cwd whose path contains
-// query (case-insensitive). Returns up to maxFileSuggestions results, sorted
-// by relevance: exact basename match first, then basename prefix match, then
-// substring match, then path match.
+// searchFiles recursively walks cwd and returns up to maxFileSuggestions file
+// paths that fuzzy-match the query (case-insensitive), sorted by match quality.
+// An empty query matches all files.
 func searchFiles(query string) []string {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil
 	}
-	qLower := strings.ToLower(query)
 
 	type match struct {
-		path   string
-		score  int // lower = more relevant
+		path  string
+		score int // lower = better match; negative means no match
 	}
 
 	var matches []match
@@ -241,27 +239,11 @@ func searchFiles(query string) []string {
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
-		relLower := strings.ToLower(rel)
-		base := filepath.Base(rel)
-		baseLower := strings.ToLower(base)
 
-		var score int
-		switch {
-		case qLower == "":
-			// Empty query: all files match equally; alphabetical order used.
-			score = 4
-		case baseLower == qLower:
-			score = 0
-		case strings.HasPrefix(baseLower, qLower):
-			score = 1
-		case strings.Contains(baseLower, qLower):
-			score = 2
-		case strings.Contains(relLower, qLower):
-			score = 3
-		default:
+		score, ok := fuzzyScore(query, rel)
+		if !ok {
 			return nil
 		}
-
 		matches = append(matches, match{path: rel, score: score})
 		return nil
 	})
@@ -282,4 +264,60 @@ func searchFiles(query string) []string {
 		result[i] = matches[i].path
 	}
 	return result
+}
+
+// fuzzyScore returns a match quality score for query against target, and
+// whether query matches at all. Lower scores are better matches.
+//
+// The scoring is fzf-style: characters in query must appear in order in
+// target (case-insensitive). Consecutive matches, matches at the start of
+// path segments, and earlier/tighter matches all reduce the score. Good
+// matches routinely score negative, so "no match" is signaled via the bool
+// return rather than a sentinel score value.
+// An empty query matches anything with score 0.
+func fuzzyScore(query, target string) (int, bool) {
+	if query == "" {
+		return 0, true
+	}
+	q := strings.ToLower(query)
+	t := strings.ToLower(target)
+
+	qi := 0    // position in query
+	prev := -2 // previous matched index (-2 = before start, for gap penalty)
+	score := 0
+	consecutive := 0 // number of consecutive matches so far
+
+	for ti := 0; ti < len(t) && qi < len(q); ti++ {
+		if t[ti] != q[qi] {
+			continue
+		}
+		// Matched character qi at target position ti.
+		qi++
+
+		// Consecutive bonus: adjacent matches are very good.
+		if prev == ti-1 {
+			consecutive++
+			score -= 5 + consecutive // -5, -6, -7, ... per consecutive char
+		} else {
+			consecutive = 0
+			// Gap penalty: bigger gaps are worse.
+			gap := ti - prev - 1
+			score += gap * 2
+
+			// Bonus for matching at a path segment boundary (after '/' or at start).
+			if ti == 0 || t[ti-1] == '/' {
+				score -= 4
+			}
+		}
+		prev = ti
+	}
+
+	if qi < len(q) {
+		return 0, false // not all query characters found
+	}
+
+	// Penalty for unmatched characters after the last match.
+	score += (len(t) - prev - 1)
+
+	return score, true
 }

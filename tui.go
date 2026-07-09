@@ -125,8 +125,7 @@ type tuiModel struct {
 	questionCursorPos  int    // cursor position within questionInput
 
 	// Autocomplete state.
-	autocomplete       autocompleteState
-	suppressAutocomplete bool // true after backspace/delete; cleared on next keystroke or Tab
+	autocomplete autocompleteState
 
 	// Picker state.
 	picker pickerState
@@ -553,12 +552,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.autocomplete = autocompleteState{}
 				m.updateViewportContent()
 				return m, nil
-			case tea.KeyBackspace, tea.KeyDelete:
-				// Suppress autocomplete during deletion.
-				m.autocomplete = autocompleteState{}
-				m.suppressAutocomplete = true
-				m.updateViewportContent()
-				// Fall through to process the backspace/delete.
 			default:
 				// Any other key dismisses autocomplete and is processed normally.
 				m.autocomplete = autocompleteState{}
@@ -880,7 +873,6 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.agentRunning {
 				return m, nil
 			}
-			m.suppressAutocomplete = false
 			m.computeAutocomplete()
 			m.updateViewportContent()
 			return m, nil
@@ -953,14 +945,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			// Grow/shrink the input box as the content wraps or gains newlines.
 			cmds = append(cmds, m.feedTextarea(msg))
-			// Handle autocomplete suppression after deletion.
-			if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
-				m.suppressAutocomplete = true
-			} else {
-				// Any other keystroke clears suppression and triggers live autocomplete.
-				m.suppressAutocomplete = false
-				m.updateLiveAutocomplete()
-			}
+			m.updateLiveAutocomplete()
 		}
 
 	// --- Agent events ---
