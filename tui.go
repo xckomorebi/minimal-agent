@@ -1512,16 +1512,15 @@ func (m *tuiModel) rebuildOutput() {
 					m.push(roleAgent, renderCollapsedThinking(reasoning))
 				}
 			}
-			// Show tool calls with brief detail.
+			// Show assistant text content first, then tool calls.
+			if text := msg.OfAssistant.Content.OfString.Value; text != "" {
+				m.commitAgent(text)
+			}
 			if len(msg.OfAssistant.ToolCalls) > 0 {
 				for _, tc := range msg.OfAssistant.ToolCalls {
 					toolCallNames[tc.ID] = tc.Function.Name
 					m.push(roleAgentTool, renderTool(tc.Function.Name, toolCallBrief(tc)))
 				}
-				continue
-			}
-			if text := msg.OfAssistant.Content.OfString.Value; text != "" {
-				m.commitAgent(text)
 			}
 		}
 		if msg.OfTool != nil {
