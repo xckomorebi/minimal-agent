@@ -3,3 +3,6 @@ minimal-agent
 
 # Project-level agent data
 .ma/
+
+# IDE
+.vscode/
