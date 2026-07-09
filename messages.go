@@ -20,7 +20,7 @@ func isEmptyMessage(msg openai.ChatCompletionMessageParamUnion) bool {
 		return msg.OfSystem.Content.OfString.Value == ""
 	}
 	if msg.OfUser != nil {
-		return msg.OfUser.Content.OfString.Value == ""
+		return !userMessageHasContent(msg)
 	}
 	if msg.OfAssistant != nil {
 		hasContent := msg.OfAssistant.Content.OfString.Value != ""

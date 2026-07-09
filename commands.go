@@ -221,7 +221,7 @@ func cmdReSummarize(a *agent, parts []string) string {
 	var userMessages []string
 	for _, m := range a.history {
 		if m.OfUser != nil {
-			userMessages = append(userMessages, m.OfUser.Content.OfString.Value)
+			userMessages = append(userMessages, userMessageText(m))
 		}
 	}
 	userText := strings.Join(userMessages, "\n")

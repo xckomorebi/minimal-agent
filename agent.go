@@ -626,11 +626,6 @@ func (a *agent) appendCancelledResults(calls []openai.ChatCompletionMessageToolC
 	}
 }
 
-// userMessage creates a user message for the given line.
-func userMessage(line string) openai.ChatCompletionMessageParamUnion {
-	return openai.UserMessage(line)
-}
-
 // relPath converts an absolute path to a cwd-relative path if it's under cwd.
 func relPath(p string) string {
 	cwd, err := os.Getwd()
@@ -742,7 +737,7 @@ func (a *agent) compactHistory() {
 	for _, msg := range a.history[1:] {
 		if msg.OfUser != nil {
 			b.WriteString("User: ")
-			b.WriteString(msg.OfUser.Content.OfString.Value)
+			b.WriteString(userMessageText(msg))
 			b.WriteString("\n")
 		}
 		if msg.OfAssistant != nil {

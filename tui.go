@@ -842,7 +842,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.streamingKind = ""
 			m.starVisible = true
 
-			m.agent.history = append(m.agent.history, userMessage(line))
+			// Expand @mentions: @filepath and @filepath:LN inject file
+			// content as separate content parts in the user message sent
+			// to the LLM, but the TUI shows only what the user typed.
+			msg := m.agent.expandAtMentions(line)
+			m.agent.history = append(m.agent.history, msg)
 			m.agent.sessionDirty = true
 
 			// Generate a session summary asynchronously on the first user message.
@@ -1497,7 +1501,7 @@ func (m *tuiModel) rebuildOutput() {
 	toolCallNames := map[string]string{} // tool call ID → name
 	for i, msg := range m.agent.history {
 		if msg.OfUser != nil {
-			m.commitUser(msg.OfUser.Content.OfString.Value)
+			m.commitUser(userMessageText(msg))
 		}
 		if msg.OfAssistant != nil {
 			// If the agent was thinking before this message, render it.
