@@ -205,10 +205,7 @@ func autocompleteFileMention(input string) []string {
 	}
 
 	query := input[atIdx+1:]
-	if query == "" {
-		return nil
-	}
-
+	// Allow empty query — return all files (up to limit) when just @ is typed.
 	return searchFiles(query)
 }
 
@@ -239,7 +236,6 @@ func searchFiles(query string) []string {
 			}
 			return nil
 		}
-		// Don't suggest the query itself if it's a directory.
 		rel, err := filepath.Rel(cwd, path)
 		if err != nil {
 			return nil
@@ -251,6 +247,9 @@ func searchFiles(query string) []string {
 
 		var score int
 		switch {
+		case qLower == "":
+			// Empty query: all files match equally; alphabetical order used.
+			score = 4
 		case baseLower == qLower:
 			score = 0
 		case strings.HasPrefix(baseLower, qLower):

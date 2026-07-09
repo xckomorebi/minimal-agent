@@ -125,7 +125,8 @@ type tuiModel struct {
 	questionCursorPos  int    // cursor position within questionInput
 
 	// Autocomplete state.
-	autocomplete autocompleteState
+	autocomplete       autocompleteState
+	suppressAutocomplete bool // true after backspace/delete; cleared on next keystroke or Tab
 
 	// Picker state.
 	picker pickerState
@@ -279,40 +280,32 @@ func newTUIModel(a *agent) tuiModel {
 // --- Autocomplete & picker helpers ---
 
 // computeAutocomplete populates the autocomplete state based on the current
-// textarea value and cursor position. If there's exactly one match, it applies
-// it immediately; otherwise it opens the suggestion popup.
+// textarea value. It always shows a popup when there are suggestions (never
+// auto-applies a single match). Called on Tab and on every keystroke when not
+// suppressed.
 func (m *tuiModel) computeAutocomplete() {
 	input := m.textarea.Value()
-	pos := len(input) // cursor is typically at end when Tab triggers autocomplete
 
 	// Try @file mention autocomplete first.
 	if suggestions := autocompleteFileMention(input); len(suggestions) > 0 {
-		if len(suggestions) == 1 {
-			m.applyFileCompletion(suggestions[0])
-			m.autocomplete = autocompleteState{}
-		} else {
-			m.autocomplete = autocompleteState{
-				suggestions: suggestions,
-				selected:    0,
-			}
+		m.autocomplete = autocompleteState{
+			suggestions: suggestions,
+			selected:    0,
 		}
 		return
 	}
 
-	suggestions := autocompleteCommand(input, pos)
-	if len(suggestions) == 0 {
-		m.autocomplete = autocompleteState{}
+	// Try slash command autocomplete.
+	suggestions := autocompleteCommand(input, len(input))
+	if len(suggestions) > 0 {
+		m.autocomplete = autocompleteState{
+			suggestions: suggestions,
+			selected:    0,
+		}
 		return
 	}
-	if len(suggestions) == 1 {
-		m.applyCompletion(suggestions[0])
-		m.autocomplete = autocompleteState{}
-		return
-	}
-	m.autocomplete = autocompleteState{
-		suggestions: suggestions,
-		selected:    0,
-	}
+
+	m.autocomplete = autocompleteState{}
 }
 
 // applyAutocomplete applies the currently-selected autocomplete suggestion to
@@ -394,37 +387,46 @@ func (m *tuiModel) applyCompletion(choice string) {
 	m.resize()
 }
 
-// updateFileMentionAutocomplete checks the current input for an active @mention
-// query and updates the autocomplete state accordingly. This enables live
-// suggestions as the user types after @, without needing to press Tab.
-func (m *tuiModel) updateFileMentionAutocomplete() {
+// updateLiveAutocomplete checks the current input for an active @mention or
+// slash-command query and updates the autocomplete state accordingly. This
+// enables live suggestions as the user types, without needing to press Tab.
+// It never auto-applies a single match — the user must confirm with Tab/Enter.
+func (m *tuiModel) updateLiveAutocomplete() {
 	input := m.textarea.Value()
-	suggestions := autocompleteFileMention(input)
-	if len(suggestions) == 0 {
-		// Only clear if we were showing suggestions (not slash command ones,
-		// which are Tab-triggered and already cleared by the dismiss handler).
-		if m.autocomplete.suggestions != nil {
-			m.autocomplete = autocompleteState{}
-			m.updateViewportContent()
+
+	// Try @file mention autocomplete.
+	if suggestions := autocompleteFileMention(input); len(suggestions) > 0 {
+		selected := m.autocomplete.selected
+		if selected >= len(suggestions) {
+			selected = 0
 		}
-		return
-	}
-	if len(suggestions) == 1 {
-		m.applyFileCompletion(suggestions[0])
-		m.autocomplete = autocompleteState{}
+		m.autocomplete = autocompleteState{
+			suggestions: suggestions,
+			selected:    selected,
+		}
 		m.updateViewportContent()
 		return
 	}
-	// Preserve selection if still valid; otherwise reset.
-	selected := m.autocomplete.selected
-	if selected >= len(suggestions) {
-		selected = 0
+
+	// Try slash command autocomplete.
+	if suggestions := autocompleteCommand(input, len(input)); len(suggestions) > 0 {
+		selected := m.autocomplete.selected
+		if selected >= len(suggestions) {
+			selected = 0
+		}
+		m.autocomplete = autocompleteState{
+			suggestions: suggestions,
+			selected:    selected,
+		}
+		m.updateViewportContent()
+		return
 	}
-	m.autocomplete = autocompleteState{
-		suggestions: suggestions,
-		selected:    selected,
+
+	// No suggestions: clear popup if it was showing.
+	if m.autocomplete.suggestions != nil {
+		m.autocomplete = autocompleteState{}
+		m.updateViewportContent()
 	}
-	m.updateViewportContent()
 }
 
 // openSessionPicker opens a picker to select a saved session. Used by /resume
@@ -524,14 +526,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 
-		// --- Autocomplete active: tab/arrows to navigate, enter to accept, esc to cancel ---
+		// --- Autocomplete active: arrows to navigate, Tab/Enter to confirm, Esc to cancel ---
 		if len(m.autocomplete.suggestions) > 0 {
 			switch msg.Type {
 			case tea.KeyTab:
-				m.autocomplete.selected = (m.autocomplete.selected + 1) % len(m.autocomplete.suggestions)
+				m.applyAutocomplete()
 				m.updateViewportContent()
 				return m, nil
-			case tea.KeyShiftTab, tea.KeyUp:
+			case tea.KeyShiftTab, tea.KeyUp, tea.KeyCtrlP:
 				if m.autocomplete.selected > 0 {
 					m.autocomplete.selected--
 				} else {
@@ -539,7 +541,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				m.updateViewportContent()
 				return m, nil
-			case tea.KeyDown:
+			case tea.KeyDown, tea.KeyCtrlN:
 				m.autocomplete.selected = (m.autocomplete.selected + 1) % len(m.autocomplete.suggestions)
 				m.updateViewportContent()
 				return m, nil
@@ -551,6 +553,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.autocomplete = autocompleteState{}
 				m.updateViewportContent()
 				return m, nil
+			case tea.KeyBackspace, tea.KeyDelete:
+				// Suppress autocomplete during deletion.
+				m.autocomplete = autocompleteState{}
+				m.suppressAutocomplete = true
+				m.updateViewportContent()
+				// Fall through to process the backspace/delete.
 			default:
 				// Any other key dismisses autocomplete and is processed normally.
 				m.autocomplete = autocompleteState{}
@@ -830,6 +838,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Arrow keys, page up/down, home/end: scroll viewport (always, even during streaming).
 		// But skip if autocomplete is showing (handled above).
 		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown ||
+			msg.Type == tea.KeyCtrlP || msg.Type == tea.KeyCtrlN ||
 			msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
 			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd {
 			var cmd tea.Cmd
@@ -871,6 +880,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.agentRunning {
 				return m, nil
 			}
+			m.suppressAutocomplete = false
 			m.computeAutocomplete()
 			m.updateViewportContent()
 			return m, nil
@@ -943,8 +953,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			// Grow/shrink the input box as the content wraps or gains newlines.
 			cmds = append(cmds, m.feedTextarea(msg))
-			// Auto-trigger @mention autocomplete on every keystroke.
-			m.updateFileMentionAutocomplete()
+			// Handle autocomplete suppression after deletion.
+			if msg.Type == tea.KeyBackspace || msg.Type == tea.KeyDelete {
+				m.suppressAutocomplete = true
+			} else {
+				// Any other keystroke clears suppression and triggers live autocomplete.
+				m.suppressAutocomplete = false
+				m.updateLiveAutocomplete()
+			}
 		}
 
 	// --- Agent events ---
