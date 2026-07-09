@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -153,4 +154,133 @@ func expandTildePath(p string) string {
 		}
 	}
 	return p
+}
+
+// maxFileSuggestions limits how many file paths the @mention autocomplete shows.
+const maxFileSuggestions = 10
+
+// ignoreDirs are directory names skipped during file search for @mentions.
+var ignoreDirs = map[string]bool{
+	".git":          true,
+	"node_modules":  true,
+	"vendor":        true,
+	".ma":           true,
+	"__pycache__":   true,
+	".next":         true,
+	".nuxt":         true,
+	"dist":          true,
+	"build":         true,
+	"target":        true,
+	".cache":        true,
+	".gradle":       true,
+	".idea":         true,
+	".vscode":       true,
+}
+
+// autocompleteFileMention detects an @mention query at the end of the input
+// and returns matching file paths (relative to cwd). Returns nil if there is
+// no active @mention query.
+//
+// An @mention is active when the input ends with @query where query is a
+// non-empty string of path characters (no whitespace). The @ must be at the
+// start of input or preceded by whitespace, matching atMentionRe.
+func autocompleteFileMention(input string) []string {
+	// Find the last @ that starts a mention: preceded by start-of-string
+	// or whitespace.
+	atIdx := -1
+	for i := len(input) - 1; i >= 0; i-- {
+		if input[i] == '@' {
+			if i == 0 || input[i-1] == ' ' || input[i-1] == '\t' || input[i-1] == '\n' {
+				atIdx = i
+				break
+			}
+		}
+		// Stop at whitespace — the @ must be in the current word.
+		if input[i] == ' ' || input[i] == '\t' || input[i] == '\n' {
+			break
+		}
+	}
+	if atIdx < 0 {
+		return nil
+	}
+
+	query := input[atIdx+1:]
+	if query == "" {
+		return nil
+	}
+
+	return searchFiles(query)
+}
+
+// searchFiles recursively searches for files under cwd whose path contains
+// query (case-insensitive). Returns up to maxFileSuggestions results, sorted
+// by relevance: exact basename match first, then basename prefix match, then
+// substring match, then path match.
+func searchFiles(query string) []string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil
+	}
+	qLower := strings.ToLower(query)
+
+	type match struct {
+		path   string
+		score  int // lower = more relevant
+	}
+
+	var matches []match
+	filepath.WalkDir(cwd, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			if ignoreDirs[d.Name()] {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		// Don't suggest the query itself if it's a directory.
+		rel, err := filepath.Rel(cwd, path)
+		if err != nil {
+			return nil
+		}
+		rel = filepath.ToSlash(rel)
+		relLower := strings.ToLower(rel)
+		base := filepath.Base(rel)
+		baseLower := strings.ToLower(base)
+
+		var score int
+		switch {
+		case baseLower == qLower:
+			score = 0
+		case strings.HasPrefix(baseLower, qLower):
+			score = 1
+		case strings.Contains(baseLower, qLower):
+			score = 2
+		case strings.Contains(relLower, qLower):
+			score = 3
+		default:
+			return nil
+		}
+
+		matches = append(matches, match{path: rel, score: score})
+		return nil
+	})
+
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].score != matches[j].score {
+			return matches[i].score < matches[j].score
+		}
+		return matches[i].path < matches[j].path
+	})
+
+	limit := len(matches)
+	if limit > maxFileSuggestions {
+		limit = maxFileSuggestions
+	}
+	result := make([]string, limit)
+	for i := 0; i < limit; i++ {
+		result[i] = matches[i].path
+	}
+	return result
 }

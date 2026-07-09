@@ -284,6 +284,21 @@ func newTUIModel(a *agent) tuiModel {
 func (m *tuiModel) computeAutocomplete() {
 	input := m.textarea.Value()
 	pos := len(input) // cursor is typically at end when Tab triggers autocomplete
+
+	// Try @file mention autocomplete first.
+	if suggestions := autocompleteFileMention(input); len(suggestions) > 0 {
+		if len(suggestions) == 1 {
+			m.applyFileCompletion(suggestions[0])
+			m.autocomplete = autocompleteState{}
+		} else {
+			m.autocomplete = autocompleteState{
+				suggestions: suggestions,
+				selected:    0,
+			}
+		}
+		return
+	}
+
 	suggestions := autocompleteCommand(input, pos)
 	if len(suggestions) == 0 {
 		m.autocomplete = autocompleteState{}
@@ -307,8 +322,42 @@ func (m *tuiModel) applyAutocomplete() {
 		return
 	}
 	choice := m.autocomplete.suggestions[m.autocomplete.selected]
-	m.applyCompletion(choice)
+	// Check whether this is a file-mention completion (input has active @).
+	if autocompleteFileMention(m.textarea.Value()) != nil {
+		m.applyFileCompletion(choice)
+	} else {
+		m.applyCompletion(choice)
+	}
 	m.autocomplete = autocompleteState{}
+}
+
+// applyFileCompletion replaces the @mention query at the end of the input
+// with @<choice> and adds a trailing space.
+func (m *tuiModel) applyFileCompletion(choice string) {
+	input := m.textarea.Value()
+
+	// Find the @ that starts the current mention (last @ preceded by
+	// start-of-string or whitespace).
+	atIdx := -1
+	for i := len(input) - 1; i >= 0; i-- {
+		if input[i] == '@' {
+			if i == 0 || input[i-1] == ' ' || input[i-1] == '\t' || input[i-1] == '\n' {
+				atIdx = i
+				break
+			}
+		}
+		if input[i] == ' ' || input[i] == '\t' || input[i] == '\n' {
+			break
+		}
+	}
+	if atIdx < 0 {
+		return
+	}
+
+	newValue := input[:atIdx+1] + choice + " "
+	m.textarea.SetValue(newValue)
+	m.textarea.CursorEnd()
+	m.resize()
 }
 
 // applyCompletion replaces the last word before the cursor with the given
@@ -343,6 +392,39 @@ func (m *tuiModel) applyCompletion(choice string) {
 	// textarea.CursorEnd moves to the end; we can use SetCursor if needed.
 	_ = newPos
 	m.resize()
+}
+
+// updateFileMentionAutocomplete checks the current input for an active @mention
+// query and updates the autocomplete state accordingly. This enables live
+// suggestions as the user types after @, without needing to press Tab.
+func (m *tuiModel) updateFileMentionAutocomplete() {
+	input := m.textarea.Value()
+	suggestions := autocompleteFileMention(input)
+	if len(suggestions) == 0 {
+		// Only clear if we were showing suggestions (not slash command ones,
+		// which are Tab-triggered and already cleared by the dismiss handler).
+		if m.autocomplete.suggestions != nil {
+			m.autocomplete = autocompleteState{}
+			m.updateViewportContent()
+		}
+		return
+	}
+	if len(suggestions) == 1 {
+		m.applyFileCompletion(suggestions[0])
+		m.autocomplete = autocompleteState{}
+		m.updateViewportContent()
+		return
+	}
+	// Preserve selection if still valid; otherwise reset.
+	selected := m.autocomplete.selected
+	if selected >= len(suggestions) {
+		selected = 0
+	}
+	m.autocomplete = autocompleteState{
+		suggestions: suggestions,
+		selected:    selected,
+	}
+	m.updateViewportContent()
 }
 
 // openSessionPicker opens a picker to select a saved session. Used by /resume
@@ -861,6 +943,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			// Grow/shrink the input box as the content wraps or gains newlines.
 			cmds = append(cmds, m.feedTextarea(msg))
+			// Auto-trigger @mention autocomplete on every keystroke.
+			m.updateFileMentionAutocomplete()
 		}
 
 	// --- Agent events ---
@@ -1479,6 +1563,40 @@ func (m *tuiModel) selectedApprovalAnswer() approvalAnswer {
 }
 
 func (m *tuiModel) renderAutocomplete() string {
+	// Determine if suggestions should be rendered vertically (file paths are
+	// typically long; slash commands are short). Use vertical layout when any
+	// suggestion exceeds 15 characters or there are more than 5 suggestions.
+	vertical := len(m.autocomplete.suggestions) > 5
+	if !vertical {
+		for _, s := range m.autocomplete.suggestions {
+			if len(s) > 15 {
+				vertical = true
+				break
+			}
+		}
+	}
+
+	if vertical {
+		var lines []string
+		for i, s := range m.autocomplete.suggestions {
+			marker := "  "
+			if i == m.autocomplete.selected {
+				marker = "> "
+			}
+			var styled string
+			if i == m.autocomplete.selected {
+				styled = lipgloss.NewStyle().
+					Foreground(lipgloss.Color("0")).
+					Background(lipgloss.Color("6")).
+					Render(s)
+			} else {
+				styled = dimStyle.Render(s)
+			}
+			lines = append(lines, "  "+marker+styled)
+		}
+		return strings.Join(lines, "\n") + "\n"
+	}
+
 	var parts []string
 	for i, s := range m.autocomplete.suggestions {
 		styled := s
