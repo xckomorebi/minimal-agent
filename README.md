@@ -5,6 +5,10 @@ A **hobby project**, purely vibe-coded.
 The first commit was written by **Claude Code**. Every commit since has been
 written by the agent itself — dogfooding all the way down.
 
+> **\[fake news\]** I do use Claude Code for some edits. You know, checking the
+> TUI aesthetics, fixing things when the agent itself is broken and can't
+> self-evolve without outside help. Self-hosting is aspirational, okay?
+
 ## What it is
 
 A Go-based CLI coding agent with a full-screen TUI, built on the
