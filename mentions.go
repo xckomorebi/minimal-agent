@@ -75,21 +75,15 @@ func (a *agent) expandAtMentions(line string) openai.ChatCompletionMessageParamU
 		if lineNum > 0 {
 			fileLines := strings.Split(content, "\n")
 			if lineNum <= len(fileLines) {
-				start := lineNum - lineContextLines
-				if start < 0 {
-					start = 0
-				}
-				end := lineNum + lineContextLines
-				if end > len(fileLines) {
-					end = len(fileLines)
-				}
+				start := max(lineNum-lineContextLines, 0)
+				end := min(lineNum+lineContextLines, len(fileLines))
 				var b strings.Builder
 				for i := start; i < end; i++ {
 					marker := "  "
 					if i+1 == lineNum {
 						marker = "> "
 					}
-					b.WriteString(fmt.Sprintf("%sL%d: %s\n", marker, i+1, fileLines[i]))
+					fmt.Fprintf(&b, "%sL%d: %s\n", marker, i+1, fileLines[i])
 				}
 				parts = append(parts, openai.TextContentPart(
 					fmt.Sprintf("[file: %s  (lines %d-%d, line %d marked)]\n%s",
@@ -255,12 +249,9 @@ func searchFiles(query string) []string {
 		return matches[i].path < matches[j].path
 	})
 
-	limit := len(matches)
-	if limit > maxFileSuggestions {
-		limit = maxFileSuggestions
-	}
+	limit := min(len(matches), maxFileSuggestions)
 	result := make([]string, limit)
-	for i := 0; i < limit; i++ {
+	for i := range limit {
 		result[i] = matches[i].path
 	}
 	return result

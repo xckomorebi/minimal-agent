@@ -31,7 +31,7 @@ type sessionFile struct {
 	Config     sessionConfig                            `json:"config"`
 	History    []openai.ChatCompletionMessageParamUnion `json:"history"`
 	Summary    string                                   `json:"summary,omitempty"`
-	TokenUsage tokenUsage                               `json:"token_usage,omitempty"`
+	TokenUsage tokenUsage                               `json:"token_usage"`
 	FileMtimes map[string]time.Time                     `json:"file_mtimes,omitempty"`
 }
 

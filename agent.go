@@ -747,7 +747,7 @@ func (a *agent) compactHistory() {
 				b.WriteString("\n")
 			}
 			for _, tc := range msg.OfAssistant.ToolCalls {
-				b.WriteString(fmt.Sprintf("Assistant: tool call %s(%s)\n", tc.Function.Name, tc.Function.Arguments))
+				fmt.Fprintf(&b, "Assistant: tool call %s(%s)\n", tc.Function.Name, tc.Function.Arguments)
 			}
 		}
 		if msg.OfTool != nil {
@@ -755,7 +755,7 @@ func (a *agent) compactHistory() {
 			if len(result) > 500 {
 				result = result[:500] + "..."
 			}
-			b.WriteString(fmt.Sprintf("Tool result: %s\n", result))
+			fmt.Fprintf(&b, "Tool result: %s\n", result)
 		}
 	}
 

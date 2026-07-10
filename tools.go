@@ -133,8 +133,7 @@ func parseSkillFrontmatter(content string) string {
 		if trimmed == "---" {
 			return "" // end of frontmatter, didn't find description
 		}
-		if strings.HasPrefix(trimmed, "description:") {
-			desc := strings.TrimPrefix(trimmed, "description:")
+		if desc, ok := strings.CutPrefix(trimmed, "description:"); ok {
 			desc = strings.TrimSpace(desc)
 			// Unquote if single-quoted or double-quoted.
 			if len(desc) >= 2 && ((desc[0] == '\'' && desc[len(desc)-1] == '\'') || (desc[0] == '"' && desc[len(desc)-1] == '"')) {
@@ -390,16 +389,13 @@ func (a *agent) webSearch(ctx context.Context, call openai.ChatCompletionMessage
 	linkMatches := linkRe.FindAllStringSubmatch(htmlBody, -1)
 	snippetMatches := snippetRe.FindAllStringSubmatch(htmlBody, -1)
 
-	count := args.Num
-	if count > len(linkMatches) {
-		count = len(linkMatches)
-	}
+	count := min(args.Num, len(linkMatches))
 	if count == 0 {
 		return openai.ToolMessage("no results found for: "+args.Query, call.ID)
 	}
 
 	var results []string
-	for i := 0; i < count; i++ {
+	for i := range count {
 		href := linkMatches[i][1]
 		title := linkMatches[i][2]
 
@@ -412,10 +408,10 @@ func (a *agent) webSearch(ctx context.Context, call openai.ChatCompletionMessage
 		}
 
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("%d. %s\n", i+1, strings.TrimSpace(title)))
-		b.WriteString(fmt.Sprintf("   %s\n", realURL))
+		fmt.Fprintf(&b, "%d. %s\n", i+1, strings.TrimSpace(title))
+		fmt.Fprintf(&b, "   %s\n", realURL)
 		if snippet != "" {
-			b.WriteString(fmt.Sprintf("   %s\n", snippet))
+			fmt.Fprintf(&b, "   %s\n", snippet)
 		}
 		results = append(results, b.String())
 	}
@@ -450,7 +446,7 @@ func (a *agent) webFetch(ctx context.Context, call openai.ChatCompletionMessageT
 	// Reject non-text content types.
 	ct := resp.Header.Get("Content-Type")
 	if ct != "" {
-		mt := strings.SplitN(ct, ";", 2)[0]
+		mt, _, _ := strings.Cut(ct, ";")
 		switch mt {
 		case "text/html", "text/plain", "application/xhtml+xml", "application/xml", "text/xml":
 		default:

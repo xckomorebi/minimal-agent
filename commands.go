@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -15,9 +16,9 @@ import (
 // commandSpec describes a slash command.
 type commandSpec struct {
 	name        string
-	description string                                       // short one-line for /help listing
-	detail      string                                       // longer help for /help <cmd>
-	handler     func(a *agent, parts []string) string        // parts[0] is the command name
+	description string                                // short one-line for /help listing
+	detail      string                                // longer help for /help <cmd>
+	handler     func(a *agent, parts []string) string // parts[0] is the command name
 }
 
 // commands maps command name → spec. The map is populated in init().
@@ -204,12 +205,14 @@ func cmdListSession(a *agent, parts []string) string {
 			b.WriteString("\n")
 		}
 		if n == a.sessionName {
-			b.WriteString("*" + n)
+			b.WriteByte('*')
+			b.WriteString(n)
 		} else {
 			b.WriteString(n)
 		}
 		if s := sessionSummary(n); s != "" {
-			b.WriteString(" ‒ " + s)
+			b.WriteString(" ‒ ")
+			b.WriteString(s)
 		}
 	}
 	return b.String()
@@ -406,7 +409,7 @@ func cmdHelp(a *agent, parts []string) string {
 	}
 	for _, n := range names {
 		spec := commands[n]
-		b.WriteString(fmt.Sprintf("  /%-*s  %s\n", maxLen, spec.name, spec.description))
+		fmt.Fprintf(&b, "  /%-*s  %s\n", maxLen, spec.name, spec.description)
 	}
 	b.WriteString("\ntype /help <command> for details")
 	return b.String()
@@ -528,13 +531,7 @@ func autocompleteCommand(input string, cursorPos int) []string {
 	cmdName := parts[0]
 
 	// If the first word doesn't match any command exactly, suggest command names.
-	matchedCmd := false
-	for _, n := range commandNames() {
-		if n == cmdName {
-			matchedCmd = true
-			break
-		}
-	}
+	matchedCmd := slices.Contains(commandNames(), cmdName)
 
 	if !matchedCmd && len(parts) == 1 && !trailingSpace {
 		// User is typing a command name — suggest matching commands.

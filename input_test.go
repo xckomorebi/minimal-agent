@@ -40,7 +40,7 @@ func TestPersistedResizeOnWrap(t *testing.T) {
 		t.Fatalf("empty input height = %d, want 1", got)
 	}
 
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		mm = typeRune(mm, 'x')
 	}
 
@@ -164,7 +164,7 @@ func isQuit(cmd tea.Cmd) bool {
 // Plain Enter submits and resets the input back to one line.
 func TestPlainEnterSubmitsAndResets(t *testing.T) {
 	mm := setup(t, 40, 20)
-	for i := 0; i < 50; i++ {
+	for range 50 {
 		mm = typeRune(mm, 'x')
 	}
 	mm, _ = mm.Update(tea.KeyMsg{Type: tea.KeyEnter})

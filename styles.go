@@ -48,12 +48,6 @@ var (
 			Faint(true).
 			Italic(true)
 
-	// Collapsed reasoning line.
-	collapsedThinkStyle = lipgloss.NewStyle().
-				Faint(true).
-				Italic(true).
-				Foreground(lipgloss.Color("5"))
-
 	// Tool dot and label: bold yellow.
 	toolDotStyle = lipgloss.NewStyle().
 			Bold(true).
@@ -86,15 +80,6 @@ var (
 	questionStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("6"))
-
-	// Banner box.
-	bannerBorderStyle = lipgloss.NewStyle().
-				Foreground(lipgloss.Color("8"))
-
-	// Status bar.
-	statusBarStyle = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("8")).
-			Background(lipgloss.Color("0"))
 
 	// Diff added line: green.
 	diffAddStyle = lipgloss.NewStyle().
@@ -406,10 +391,6 @@ func renderThinkStar(visible bool) string {
 	return " "
 }
 
-func renderReasoning(line string) string {
-	return thinkStyle.Render("✦") + " " + reasonStyle.Render(line)
-}
-
 func renderCollapsedThinking(reasoning string) string {
 	summary := "thought about it"
 	if words := len(strings.Fields(reasoning)); words > 0 {
@@ -448,10 +429,6 @@ func renderToolResult(result string) string {
 
 func renderError(msg string) string {
 	return errStyle.Render("✗ " + msg)
-}
-
-func renderOK(msg string) string {
-	return okStyle.Render("✓ " + msg)
 }
 
 // Renderer for highlighted shell blocks in approval prompts, cached by wrap
@@ -524,10 +501,7 @@ var shellBlockHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245")
 // of horizontal padding. Chroma/lipgloss reset the background at every SGR
 // reset, so the background is re-armed after each one.
 func shellBlockLine(content string, blockW int) string {
-	pad := blockW - 1 - lipgloss.Width(content)
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(blockW-1-lipgloss.Width(content), 1)
 	body := strings.ReplaceAll(content, "\x1b[0m", "\x1b[0m"+shellBlockBGSeq)
 	return shellBlockBGSeq + " " + body + strings.Repeat(" ", pad) + "\x1b[0m"
 }

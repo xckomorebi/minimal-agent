@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
-	"sort"
 	"sync"
 
 	"github.com/fsnotify/fsnotify"
@@ -97,28 +97,11 @@ func (cfg *globalConfig) profileModel() string {
 // profileHTTPHeaders merges the active profile's headers over the global ones.
 func (cfg *globalConfig) profileHTTPHeaders() map[string]string {
 	out := make(map[string]string)
-	for k, v := range cfg.HTTPHeaders {
-		out[k] = v
-	}
+	maps.Copy(out, cfg.HTTPHeaders)
 	if p := cfg.resolvedProfile(); p != nil {
-		for k, v := range p.HTTPHeaders {
-			out[k] = v
-		}
+		maps.Copy(out, p.HTTPHeaders)
 	}
 	return out
-}
-
-// profileNames returns the sorted names of all defined profiles.
-func (cfg *globalConfig) profileNames() []string {
-	if cfg == nil {
-		return nil
-	}
-	names := make([]string, 0, len(cfg.Profiles))
-	for n := range cfg.Profiles {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // mcpServerConfig describes an MCP server to connect to on startup.

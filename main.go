@@ -87,7 +87,7 @@ func buildSystemMessage() string {
 		b.WriteString("Call skill(name) to load a skill's full instructions before using it. Use name='list' to enumerate.\n")
 		b.WriteString("Available skills (use the skill tool to load one before applying it):\n\n")
 		for _, se := range skillIndex {
-			b.WriteString(fmt.Sprintf("- **%s**: %s\n", se.Name, se.Description))
+		fmt.Fprintf(&b, "- **%s**: %s\n", se.Name, se.Description)
 		}
 	}
 

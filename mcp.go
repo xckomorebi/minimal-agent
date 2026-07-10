@@ -44,9 +44,7 @@ func connectMCPServers(ctx context.Context, configs []mcpServerConfig) {
 		slog.Debug("MCP server connected", "server", cfg.Name, "tools", len(cs.tools))
 		activeMCPServers = append(activeMCPServers, cs)
 
-		for _, t := range cs.tools {
-			externalTools = append(externalTools, t)
-		}
+		externalTools = append(externalTools, cs.tools...)
 	}
 }
 
@@ -85,7 +83,7 @@ func connectOneMCPServer(ctx context.Context, cfg mcpServerConfig) (*connectedMC
 }
 
 // mcpTransport creates the appropriate transport for the server config.
-func mcpTransport(ctx context.Context, cfg mcpServerConfig) (mcp.Transport, error) {
+func mcpTransport(_ context.Context, cfg mcpServerConfig) (mcp.Transport, error) {
 	if cfg.URL != "" {
 		// Streamable HTTP transport (online MCP server).
 		return &mcp.StreamableClientTransport{

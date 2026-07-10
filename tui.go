@@ -1103,8 +1103,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // immediately, anything else starts an agent turn. Returns the follow-up
 // command (nil when nothing needs to be awaited).
 func (m *tuiModel) dispatchInput(line string) tea.Cmd {
-	if strings.HasPrefix(line, "/") {
-		parts := strings.Fields(strings.TrimPrefix(line, "/"))
+	if rest, ok := strings.CutPrefix(line, "/"); ok {
+		parts := strings.Fields(rest)
 		if len(parts) == 0 {
 			// Just "/" — show unknown command.
 			m.renderCommand(line)
@@ -1197,7 +1197,7 @@ func (m *tuiModel) updateViewportContent() {
 	for i, cl := range m.committed {
 		if i > 0 {
 			gap := spacerGap(m.committed[i-1].role, cl.role)
-			for j := 0; j < gap; j++ {
+			for range gap {
 				lines = append(lines, "")
 			}
 		}
@@ -1211,7 +1211,7 @@ func (m *tuiModel) updateViewportContent() {
 		}
 		if prevRole != roleAgentTool {
 			gap := spacerGap(prevRole, roleAgentTool)
-			for j := 0; j < gap; j++ {
+			for range gap {
 				lines = append(lines, "")
 			}
 		}
@@ -1240,7 +1240,7 @@ func (m *tuiModel) updateViewportContent() {
 		}
 		if prevRole != streamRole {
 			gap := spacerGap(prevRole, streamRole)
-			for j := 0; j < gap; j++ {
+			for range gap {
 				lines = append(lines, "")
 			}
 		}
@@ -1434,10 +1434,7 @@ func (m *tuiModel) renderPicker() string {
 		}
 	}
 	// marker (2) + number prefix (3) + border/padding (4) + slack.
-	boxWidth := min(maxLine+11, m.width-4)
-	if boxWidth < 24 {
-		boxWidth = 24
-	}
+	boxWidth := max(min(maxLine+11, m.width-4), 24)
 	innerWidth := boxWidth - 4 // border + padding
 
 	var lines []string
@@ -1544,7 +1541,8 @@ func (m *tuiModel) renderQuestionInput() string {
 			if label == "" {
 				label = cursor
 			}
-			b.WriteString(selectStyle.Render("> ") + label)
+			b.WriteString(selectStyle.Render("> "))
+			b.WriteString(label)
 		} else {
 			label := m.questionInput
 			if label == "" {
@@ -1588,7 +1586,8 @@ func (m *tuiModel) renderApprovalInput() string {
 				if display == "" {
 					display = cursor
 				}
-				b.WriteString(selectStyle.Render("> 3. deny reason: ") + display)
+				b.WriteString(selectStyle.Render("> 3. deny reason: "))
+			b.WriteString(display)
 			} else {
 				b.WriteString(selectStyle.Render("> " + label))
 			}
@@ -1775,7 +1774,7 @@ func (m *tuiModel) renderCommand(line string) {
 
 	prevLen := len(m.committed)
 
-	for _, ln := range strings.Split(result, "\n") {
+	for ln := range strings.SplitSeq(result, "\n") {
 		if ln == "" {
 			m.push(roleCommand, "")
 			continue
@@ -1851,7 +1850,7 @@ func (m *tuiModel) commitAgent(text string) {
 		wrapWidth = 80
 	}
 	rendered := renderMarkdown(text, wrapWidth)
-	for _, line := range strings.Split(rendered, "\n") {
+	for line := range strings.SplitSeq(rendered, "\n") {
 		m.push(roleAgent, bar+line)
 	}
 }
@@ -2021,13 +2020,13 @@ func wordWrap(text string, width int) []string {
 		width = 80
 	}
 	var lines []string
-	for _, para := range strings.Split(text, "\n") {
+	for para := range strings.SplitSeq(text, "\n") {
 		if para == "" {
 			lines = append(lines, "")
 			continue
 		}
 		wrapped := lipgloss.NewStyle().Width(width).Render(para)
-		for _, ln := range strings.Split(wrapped, "\n") {
+		for ln := range strings.SplitSeq(wrapped, "\n") {
 			lines = append(lines, strings.TrimRight(ln, " "))
 		}
 	}
