@@ -5,6 +5,38 @@ All notable changes to minimal-agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.1.1] - 2025-07-17
+
+### Changed
+
+- **Transcript restyle**: replaced `you>`/`agent>` labels with a `❯` user glyph and a green gutter bar (`▎`) on agent output, so speaker is identified by color, not text.
+- **GitHub-style bash approval**: commands requiring approval render in a dark code block with syntax highlighting (gruvbox theme via glamour). The block folds to a single outcome line after approve/deny.
+- Inline code in markdown output no longer shows a background slab — foreground color only, for readability on light terminal themes.
+- Tool result lines prefixed with an elbow connector (`└`) to visually attach to the tool-call line above.
+- Streaming agent content now goes through the markdown renderer, eliminating the visible reflow/recolor when a turn ends.
+- Collapsed thinking block shows word count (`N words · Ctrl-O to expand`).
+- Hint bar now shows model name and context percentage when token tracking is available.
+
+### Added
+
+- **Input queuing during turns**: messages typed while the agent is running are queued and dispatched in order when the turn finishes. On error/cancel, queued input is restored to the text area (not auto-sent).
+- **Double Ctrl-C to quit**: first Ctrl-C on an idle empty prompt shows "Ctrl-C again to quit"; only a second exits.
+- **Escape** key now cancels a running turn (same as Ctrl-C).
+- **Session picker enhancements**: vim-style `j`/`k` navigation and number keys `1-9` to directly pick a session.
+- **Autocomplete padding**: items are width-padded so the row doesn't shift horizontally as the selection moves.
+- Self-deprecating disclaimer in README about occasional human intervention.
+
+### Fixed
+
+- Cursor positions in inline inputs (approval reason, question "other" answer) now use rune indices instead of byte offsets, fixing movement and editing with multibyte text (CJK, emoji).
+- Hint bar truncated to one row with `MaxWidth` to prevent layout breakage on narrow terminals.
+
+### Housekeeping
+
+- MCP SDK (`modelcontextprotocol/go-sdk`) promoted from indirect to direct dependency.
+
+---
+
 ## [v0.1.0] - 2025-07-17
 
 ### Added
@@ -81,7 +113,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-line tool results padded correctly.
 - Sticky-bottom auto-follow that respects manual scrolling.
 
-[Unreleased]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.1...HEAD
+[v0.1.1]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.0...v0.1.1
 [v0.1.0]: https://github.com/xckomorebi/minimal-agent/compare/v0.0.2...v0.1.0
 [v0.0.2]: https://github.com/xckomorebi/minimal-agent/compare/v0.0.1...v0.0.2
 [v0.0.1]: https://github.com/xckomorebi/minimal-agent/releases/tag/v0.0.1
