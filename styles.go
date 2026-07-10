@@ -464,8 +464,11 @@ var (
 )
 
 // highlightShell renders a shell command as a ```bash markdown code block.
-// The "friendly" theme leaves plain text at the default foreground, so it
-// stays readable on light and dark backgrounds. Falls back to the raw text
+// The "gruvbox" theme forces a color on every token (plain text included),
+// which is required because the block sits on the forced dark slab of
+// renderShellBlock — theme-following colors could vanish there. Its warm
+// palette (orange operators/builtins, yellow strings) is also the closest
+// chroma match to the render-markdown.nvim look. Falls back to the raw text
 // on any error.
 func highlightShell(cmd string, width int) string {
 	if width <= 0 {
@@ -477,7 +480,7 @@ func highlightShell(cmd string, width int) string {
 		cfg.Document.Margin = &noMargin
 		cfg.CodeBlock.Margin = &noMargin
 		cfg.CodeBlock.StylePrimitive.Faint = boolPtr(false)
-		cfg.CodeBlock.Theme = "friendly"
+		cfg.CodeBlock.Theme = "gruvbox"
 		r, err := glamour.NewTermRenderer(
 			glamour.WithStyles(cfg),
 			glamour.WithWordWrap(width),
@@ -505,6 +508,50 @@ func highlightShell(cmd string, width int) string {
 		lines = lines[:len(lines)-1]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// The approval shell block is a forced dark slab (GitHub-style code block),
+// so everything drawn on it uses fixed 256-palette colors instead of the
+// theme-following ANSI colors used elsewhere: the slab looks the same on
+// light and dark terminals.
+const shellBlockBGSeq = "\x1b[48;5;236m"
+
+// Header glyph and language tag stay muted gray, like an editor's code-block
+// header — the command below is the colorful part.
+var shellBlockHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+// shellBlockLine puts content on the slab, padded to blockW with one space
+// of horizontal padding. Chroma/lipgloss reset the background at every SGR
+// reset, so the background is re-armed after each one.
+func shellBlockLine(content string, blockW int) string {
+	pad := blockW - 1 - lipgloss.Width(content)
+	if pad < 1 {
+		pad = 1
+	}
+	body := strings.ReplaceAll(content, "\x1b[0m", "\x1b[0m"+shellBlockBGSeq)
+	return shellBlockBGSeq + " " + body + strings.Repeat(" ", pad) + "\x1b[0m"
+}
+
+// renderShellBlock renders a shell command as a GitHub-style code block: a
+// header row with a terminal glyph and language tag, then the command
+// syntax-highlighted on a dark background. The command is soft-wrapped to
+// fit but never reformatted — what the user reads is exactly what will run.
+func renderShellBlock(cmd string, width int) []string {
+	if width < 20 {
+		width = 80
+	}
+	inner := width - 2 // one space of slab padding each side
+	wrapped := strings.Join(wordWrap(cmd, inner), "\n")
+	body := strings.Split(highlightShell(wrapped, inner), "\n")
+
+	// The slab spans the full wrap width, like an editor code block.
+	header := shellBlockHeaderStyle.Render(">_ bash")
+	out := make([]string, 0, len(body)+1)
+	out = append(out, shellBlockLine(header, width))
+	for _, ln := range body {
+		out = append(out, shellBlockLine(ln, width))
+	}
+	return out
 }
 
 // truncateStr shortens s to maxLen runes (not bytes), so multibyte text is

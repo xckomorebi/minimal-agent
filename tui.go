@@ -1873,36 +1873,43 @@ func (m *tuiModel) commitThinkingDetail(text string) {
 	}
 }
 
-// commitApproval pushes the approval question with the subject on its own
-// highlighted line(s). The subject is shown verbatim — soft-wrapped to the
+// commitApproval pushes the approval subject. Bash commands get a
+// GitHub-style code block (the Approve/Deny options below act as the
+// question); other tools get an "Allow <name>?" line with the subject
+// indented under it. The subject is shown verbatim — soft-wrapped to the
 // viewport width but never reformatted — so what the user reads is exactly
 // what will run.
 func (m *tuiModel) commitApproval(name, detail string) {
 	start := len(m.committed)
-	// The preceding tool-call line shows the same subject and is re-displayed
-	// after approval; fold it into the block so it doesn't linger twice.
+	// The preceding tool-call line shows the same subject as the block below
+	// and is re-displayed after approval; drop it now so the command never
+	// appears twice.
 	if start > 0 && m.committed[start-1].role == roleAgentTool {
 		start--
+		m.committed = m.committed[:start]
 	}
 	m.approvalStart = start
 	m.approvalName = name
 	m.approvalDetail = detail
 
-	m.push(roleAgent, approvalStyle.Render("approve "+name+"?"))
+	if cmd, ok := strings.CutPrefix(detail, "$ "); ok {
+		// Bash: a GitHub-style code block (dark slab, syntax highlight).
+		// No question line — the Approve/Deny options right below are the
+		// question.
+		wrapWidth := m.contentWidth()
+		if wrapWidth < 20 {
+			wrapWidth = 80
+		}
+		for _, line := range renderShellBlock(cmd, wrapWidth) {
+			m.push(roleAgent, line)
+		}
+		return
+	}
 	wrapWidth := m.contentWidth() - 2
 	if wrapWidth < 20 {
 		wrapWidth = 80
 	}
-	if cmd, ok := strings.CutPrefix(detail, "$ "); ok {
-		// Bash: shown as a syntax-highlighted ```bash block. Soft-wrap
-		// before highlighting — code blocks keep lines verbatim and the
-		// viewport does not wrap.
-		wrapped := strings.Join(wordWrap(cmd, wrapWidth), "\n")
-		for _, line := range strings.Split(highlightShell(wrapped, wrapWidth), "\n") {
-			m.push(roleAgent, "  "+line)
-		}
-		return
-	}
+	m.push(roleAgent, approvalStyle.Render("Allow "+name+"?"))
 	for _, line := range wordWrap(detail, wrapWidth) {
 		m.push(roleAgent, "  "+cmdTextStyle.Render(line))
 	}
