@@ -114,6 +114,10 @@ type tuiModel struct {
 	spinnerIdx   int
 	dotIdx       int
 
+	// quitConfirm is set after a first Ctrl-C on an idle, empty prompt; a
+	// second Ctrl-C quits. Any other key clears it.
+	quitConfirm bool
+
 	// Question state (ask_user_question tool).
 	questionActive     bool
 	questionText       string
@@ -123,6 +127,11 @@ type tuiModel struct {
 	questionSelected   int
 	questionInput      string // custom text being typed by the user
 	questionCursorPos  int    // cursor position within questionInput
+
+	// Input lines submitted while a turn was running; dispatched in order
+	// when the turn finishes. On error/cancel they are restored into the
+	// textarea instead of auto-sent.
+	queued []string
 
 	// Autocomplete state.
 	autocomplete autocompleteState
@@ -495,6 +504,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, cmd
 
 	case tea.KeyMsg:
+		// Any key other than Ctrl-C withdraws a pending quit confirmation.
+		if msg.Type != tea.KeyCtrlC {
+			m.quitConfirm = false
+		}
+
 		// --- Picker mode: arrow keys, enter, esc ---
 		if len(m.picker.items) > 0 {
 			switch msg.Type {
@@ -519,6 +533,28 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEscape, tea.KeyCtrlC:
 				m.picker = pickerState{}
+				m.updateViewportContent()
+				return m, nil
+			case tea.KeyRunes:
+				s := string(msg.Runes)
+				switch {
+				case s == "k":
+					if m.picker.selected > 0 {
+						m.picker.selected--
+					}
+				case s == "j":
+					if m.picker.selected < len(m.picker.items)-1 {
+						m.picker.selected++
+					}
+				case len(s) == 1 && s[0] >= '1' && s[0] <= '9':
+					// Number keys pick an item directly.
+					if idx := int(s[0] - '1'); idx < len(m.picker.items) {
+						selected := m.picker.items[idx].name
+						m.picker = pickerState{}
+						m.renderCommand("/resume " + selected)
+						return m, nil
+					}
+				}
 				m.updateViewportContent()
 				return m, nil
 			}
@@ -603,7 +639,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeyRight:
-				if m.approvalSelected == 2 && m.approvalCursorPos < len(m.approvalInput) {
+				if m.approvalSelected == 2 && m.approvalCursorPos < runeLen(m.approvalInput) {
 					m.approvalCursorPos++
 				}
 				m.updateViewportContent()
@@ -616,7 +652,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEnd:
 				if m.approvalSelected == 2 {
-					m.approvalCursorPos = len(m.approvalInput)
+					m.approvalCursorPos = runeLen(m.approvalInput)
 				}
 				m.updateViewportContent()
 				return m, nil
@@ -629,15 +665,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.approvalCh = nil
 				return m, waitForMsg(m.msgCh)
 			case tea.KeyBackspace:
-				if m.approvalSelected == 2 && len(m.approvalInput) > 0 && m.approvalCursorPos > 0 {
-					m.approvalInput = m.approvalInput[:m.approvalCursorPos-1] + m.approvalInput[m.approvalCursorPos:]
+				if m.approvalSelected == 2 && m.approvalCursorPos > 0 {
+					m.approvalInput = deleteRune(m.approvalInput, m.approvalCursorPos-1)
 					m.approvalCursorPos--
 				}
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeyDelete:
-				if m.approvalSelected == 2 && m.approvalCursorPos < len(m.approvalInput) {
-					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + m.approvalInput[m.approvalCursorPos+1:]
+				if m.approvalSelected == 2 && m.approvalCursorPos < runeLen(m.approvalInput) {
+					m.approvalInput = deleteRune(m.approvalInput, m.approvalCursorPos)
 				}
 				m.updateViewportContent()
 				return m, nil
@@ -682,14 +718,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				// Typing into "other" input.
 				if m.approvalSelected == 2 {
-					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + s + m.approvalInput[m.approvalCursorPos:]
-					m.approvalCursorPos += len(s)
+					m.approvalInput = insertRunes(m.approvalInput, m.approvalCursorPos, s)
+					m.approvalCursorPos += len(msg.Runes)
 				}
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeySpace:
 				if m.approvalSelected == 2 {
-					m.approvalInput = m.approvalInput[:m.approvalCursorPos] + " " + m.approvalInput[m.approvalCursorPos:]
+					m.approvalInput = insertRunes(m.approvalInput, m.approvalCursorPos, " ")
 					m.approvalCursorPos++
 				}
 				m.updateViewportContent()
@@ -736,7 +772,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeyRight:
-				if editingOther && m.questionCursorPos < len(m.questionInput) {
+				if editingOther && m.questionCursorPos < runeLen(m.questionInput) {
 					m.questionCursorPos++
 				}
 				m.updateViewportContent()
@@ -749,7 +785,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case tea.KeyEnd:
 				if editingOther {
-					m.questionCursorPos = len(m.questionInput)
+					m.questionCursorPos = runeLen(m.questionInput)
 				}
 				m.updateViewportContent()
 				return m, nil
@@ -763,15 +799,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 				return m, waitForMsg(m.msgCh)
 			case tea.KeyBackspace:
-				if editingOther && len(m.questionInput) > 0 && m.questionCursorPos > 0 {
-					m.questionInput = m.questionInput[:m.questionCursorPos-1] + m.questionInput[m.questionCursorPos:]
+				if editingOther && m.questionCursorPos > 0 {
+					m.questionInput = deleteRune(m.questionInput, m.questionCursorPos-1)
 					m.questionCursorPos--
 				}
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeyDelete:
-				if editingOther && m.questionCursorPos < len(m.questionInput) {
-					m.questionInput = m.questionInput[:m.questionCursorPos] + m.questionInput[m.questionCursorPos+1:]
+				if editingOther && m.questionCursorPos < runeLen(m.questionInput) {
+					m.questionInput = deleteRune(m.questionInput, m.questionCursorPos)
 				}
 				m.updateViewportContent()
 				return m, nil
@@ -807,8 +843,8 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !editingOther {
 						m.questionSelected = otherIdx
 					}
-					m.questionInput = m.questionInput[:m.questionCursorPos] + s + m.questionInput[m.questionCursorPos:]
-					m.questionCursorPos += len(s)
+					m.questionInput = insertRunes(m.questionInput, m.questionCursorPos, s)
+					m.questionCursorPos += len(msg.Runes)
 				}
 				m.updateViewportContent()
 				return m, nil
@@ -818,7 +854,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if !editingOther {
 						m.questionSelected = otherIdx
 					}
-					m.questionInput = m.questionInput[:m.questionCursorPos] + " " + m.questionInput[m.questionCursorPos:]
+					m.questionInput = insertRunes(m.questionInput, m.questionCursorPos, " ")
 					m.questionCursorPos++
 				}
 				m.updateViewportContent()
@@ -840,6 +876,17 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		switch msg.Type {
+		case tea.KeyEscape:
+			// Esc cancels a running turn, same as Ctrl-C; a no-op when idle.
+			if m.agentRunning {
+				m.cancel()
+				m.ctx, m.cancel = context.WithCancel(context.Background())
+				m.flushStreaming()
+				m.updateViewportContent()
+				return m, waitForMsg(m.msgCh)
+			}
+			return m, nil
+
 		case tea.KeyCtrlC:
 			if m.agentRunning {
 				// Cancel the current turn but keep the session alive.
@@ -857,7 +904,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.resize()
 				return m, nil
 			}
-			// Idle and empty input: exit the program.
+			// Idle and empty input: require a second Ctrl-C so a stray one
+			// doesn't end the session.
+			if !m.quitConfirm {
+				m.quitConfirm = true
+				return m, nil
+			}
 			m.cancel()
 			m.agent.autoSave()
 			return m, tea.Quit
@@ -870,17 +922,11 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 
 		case tea.KeyTab:
-			if m.agentRunning {
-				return m, nil
-			}
 			m.computeAutocomplete()
 			m.updateViewportContent()
 			return m, nil
 
 		case tea.KeyEnter:
-			if m.agentRunning {
-				return m, nil
-			}
 			// Alt-Enter inserts a newline instead of submitting. (Ctrl-J does the
 			// same and arrives as KeyCtrlJ, handled by the default branch.)
 			if msg.Alt {
@@ -892,55 +938,13 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if line == "" {
 				return m, nil
 			}
-
-			if strings.HasPrefix(line, "/") {
-				// Check for commands that should trigger the picker.
-				parts := strings.Fields(strings.TrimPrefix(line, "/"))
-				if len(parts) == 0 {
-					// Just "/" — show unknown command.
-					m.renderCommand(line)
-					return m, nil
-				}
-				if parts[0] == "resume" && len(parts) == 1 {
-					m.openSessionPicker()
-					return m, nil
-				}
-				m.renderCommand(line)
-				if parts[0] == "compact" {
-					return m, waitForMsg(m.msgCh)
-				}
+			// While a turn is running, queue the line; it is dispatched when
+			// the turn finishes (shown as "N queued" in the hint bar).
+			if m.agentRunning {
+				m.queued = append(m.queued, line)
 				return m, nil
 			}
-
-			// User message.
-			m.commitUser(line)
-			m.updateViewportContent()
-			// Submitting always jumps to the bottom so the new turn is followed,
-			// even if the user was scrolled up reading history.
-			m.viewport.GotoBottom()
-
-			m.agentRunning = true
-			m.thinkingActive = false
-			m.thinkingBuf = ""
-			m.streamingLine = ""
-			m.streamingKind = ""
-			m.starVisible = true
-
-			// Expand @mentions: @filepath and @filepath:LN inject file
-			// content as separate content parts in the user message sent
-			// to the LLM, but the TUI shows only what the user typed.
-			msg := m.agent.expandAtMentions(line)
-			m.agent.history = append(m.agent.history, msg)
-			m.agent.sessionDirty = true
-
-			// Generate a session summary asynchronously on the first user message.
-			if !m.agent.summaryGenerated {
-				m.agent.summaryGenerated = true
-				go m.agent.generateSessionSummary(line)
-			}
-
-			go m.agent.doTurn(m.ctx)
-			return m, waitForMsg(m.msgCh)
+			return m, m.dispatchInput(line)
 
 		default:
 			// Grow/shrink the input box as the content wraps or gains newlines.
@@ -1003,11 +1007,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case toolResultDisplayMsg:
 		m.flushPendingTool()
 		// Keep short results inline; skip verbose content.
-		short := msg.result
-		if len(short) > 120 {
-			short = short[:120] + "..."
-		}
-		m.push(roleAgentResult, renderToolResult(short))
+		m.push(roleAgentResult, renderToolResult(truncateStr(msg.result, 120)))
 		m.updateViewportContent()
 		return m, waitForMsg(m.msgCh)
 
@@ -1018,7 +1018,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.approvalSelected = 0
 		m.approvalInput = ""
 		m.approvalCursorPos = 0
-		m.push(roleAgent, renderApproval(msg.name, msg.detail))
+		m.commitApproval(msg.name, msg.detail)
 		m.updateViewportContent()
 		return m, nil
 
@@ -1028,6 +1028,15 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.agent.sessionDirty = true
 		m.agent.autoSave()
 		m.updateViewportContent()
+		// Drain input queued during the turn: commands run inline; the first
+		// queued message starts the next turn (the rest stay queued).
+		for len(m.queued) > 0 {
+			line := m.queued[0]
+			m.queued = m.queued[1:]
+			if cmd := m.dispatchInput(line); cmd != nil {
+				return m, cmd
+			}
+		}
 		return m, nil
 
 	case turnErrMsg:
@@ -1046,6 +1055,14 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// already appended before cancel) is persisted.
 		m.agent.sessionDirty = true
 		m.agent.autoSave()
+		// Don't auto-send input queued behind a failed/canceled turn; put it
+		// back in the textarea so the user can edit or resend it.
+		if len(m.queued) > 0 {
+			m.textarea.SetValue(strings.Join(m.queued, "\n"))
+			m.queued = nil
+			m.textarea.CursorEnd()
+			m.resize()
+		}
 		m.updateViewportContent()
 		return m, nil
 
@@ -1103,6 +1120,59 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, tea.Batch(cmds...)
+}
+
+// dispatchInput routes a submitted input line: slash commands execute
+// immediately, anything else starts an agent turn. Returns the follow-up
+// command (nil when nothing needs to be awaited).
+func (m *tuiModel) dispatchInput(line string) tea.Cmd {
+	if strings.HasPrefix(line, "/") {
+		parts := strings.Fields(strings.TrimPrefix(line, "/"))
+		if len(parts) == 0 {
+			// Just "/" — show unknown command.
+			m.renderCommand(line)
+			return nil
+		}
+		if parts[0] == "resume" && len(parts) == 1 {
+			m.openSessionPicker()
+			return nil
+		}
+		m.renderCommand(line)
+		if parts[0] == "compact" {
+			return waitForMsg(m.msgCh)
+		}
+		return nil
+	}
+
+	// User message.
+	m.commitUser(line)
+	m.updateViewportContent()
+	// Submitting always jumps to the bottom so the new turn is followed,
+	// even if the user was scrolled up reading history.
+	m.viewport.GotoBottom()
+
+	m.agentRunning = true
+	m.thinkingActive = false
+	m.thinkingBuf = ""
+	m.streamingLine = ""
+	m.streamingKind = ""
+	m.starVisible = true
+
+	// Expand @mentions: @filepath and @filepath:LN inject file content as
+	// separate content parts in the user message sent to the LLM, but the
+	// TUI shows only what the user typed.
+	msg := m.agent.expandAtMentions(line)
+	m.agent.history = append(m.agent.history, msg)
+	m.agent.sessionDirty = true
+
+	// Generate a session summary asynchronously on the first user message.
+	if !m.agent.summaryGenerated {
+		m.agent.summaryGenerated = true
+		go m.agent.generateSessionSummary(line)
+	}
+
+	go m.agent.doTurn(m.ctx)
+	return waitForMsg(m.msgCh)
 }
 
 func waitForMsg(ch <-chan tea.Msg) tea.Cmd {
@@ -1172,7 +1242,7 @@ func (m *tuiModel) updateViewportContent() {
 		if m.starVisible {
 			dot = "●"
 		}
-		lines = append(lines, toolDotStyle.Render(dot)+" "+toolDotStyle.Render(m.pendingToolName)+" "+dimStyle.Render(m.pendingToolDetail))
+		lines = append(lines, renderToolWithDot(dot, m.pendingToolName, m.pendingToolDetail))
 	}
 
 	if m.streamingLine != "" {
@@ -1219,19 +1289,24 @@ func (m *tuiModel) updateViewportContent() {
 				}
 			}
 		case "content":
-			prefix := agentStyle.Render("agent>") + " "
-			indent := strings.Repeat(" ", lipgloss.Width(prefix))
+			bar := agentStyle.Render(agentBar) + " "
 			cw := m.contentWidth()
-			wrapWidth := cw - lipgloss.Width(prefix)
+			wrapWidth := cw - 2
 			if wrapWidth < 20 {
 				wrapWidth = 80
 			}
-			for i, ln := range wordWrap(m.streamingLine, wrapWidth) {
-				if i == 0 {
-					lines = append(lines, prefix+ln)
-				} else {
-					lines = append(lines, indent+ln)
-				}
+			// Render streaming content through the same markdown pipeline as
+			// committed text, so the display doesn't visibly reflow/recolor
+			// when the turn ends. Very large buffers fall back to plain
+			// wrapping to keep per-chunk render cost bounded.
+			var streamed []string
+			if len(m.streamingLine) <= 16384 {
+				streamed = strings.Split(renderMarkdown(m.streamingLine, wrapWidth), "\n")
+			} else {
+				streamed = wordWrap(m.streamingLine, wrapWidth)
+			}
+			for _, ln := range streamed {
+				lines = append(lines, bar+ln)
 			}
 		default:
 			lines = append(lines, m.streamingLine)
@@ -1278,7 +1353,7 @@ func (m *tuiModel) resize() {
 	}
 	taHeight := min(max(1, rows), m.maxInputHeight())
 	m.textarea.SetHeight(taHeight)
-	m.viewport.Height = max(1, m.height-2-taHeight) // hint + separator + textarea
+	m.viewport.Height = max(1, m.height-2-taHeight) // hint + separator + input area
 }
 
 // maxInputHeight is the tallest the input box may grow to: capped at 10 rows,
@@ -1310,15 +1385,26 @@ func (m tuiModel) View() string {
 	b.WriteString("\n")
 
 	// Key hints — dynamic based on state.
-	ctrlCLabel := "quit"
+	ctrlCLabel := "Ctrl-C quit"
 	if m.agentRunning {
-		ctrlCLabel = "cancel"
+		ctrlCLabel = "Esc cancel"
+	} else if m.quitConfirm {
+		ctrlCLabel = "Ctrl-C again to quit"
 	}
-	thinkingLabel := "show thinking"
-	if m.agent.thinkingDetail() {
-		thinkingLabel = "hide thinking"
+	ctxPct := ""
+	if t := m.agent.tokenUsage.Total; t > 0 {
+		if cw := m.agent.contextWindow(); cw > 0 {
+			ctxPct = fmt.Sprintf(" · %d%% ctx", t*100/cw)
+		}
 	}
-	b.WriteString(dimStyle.Render(fmt.Sprintf("Ctrl-C %s · Ctrl-O %s · %s · ↑↓ scroll", ctrlCLabel, thinkingLabel, m.agent.effectiveModel())))
+	queued := ""
+	if n := len(m.queued); n > 0 {
+		queued = fmt.Sprintf(" · %d queued", n)
+	}
+	// Truncate to one row: a soft-wrapped hint line would break the fixed
+	// hint+separator layout math and push the input area off-screen.
+	hint := dimStyle.Render(fmt.Sprintf("%s · %s%s%s", ctrlCLabel, m.agent.effectiveModel(), ctxPct, queued))
+	b.WriteString(lipgloss.NewStyle().MaxWidth(max(1, m.width-2)).Render(hint))
 	b.WriteString("\n")
 
 	// Separator.
@@ -1332,12 +1418,14 @@ func (m tuiModel) View() string {
 		b.WriteString(m.renderAutocomplete())
 	}
 
-	// Input area.
+	// Input area. While a turn runs the spinner status occupies the input
+	// box; typing is still possible (input gets queued) but not encouraged —
+	// the status only yields to the textarea once the user starts typing.
 	if m.waitingApproval {
 		b.WriteString(m.renderApprovalInput())
 	} else if m.questionActive {
 		b.WriteString(m.renderQuestionInput())
-	} else if m.agentRunning {
+	} else if m.agentRunning && m.textarea.Value() == "" {
 		frame := spinnerFrames[m.spinnerIdx%len(spinnerFrames)]
 		root := "generating"
 		if m.thinkingActive {
@@ -1363,12 +1451,13 @@ func (m *tuiModel) renderPicker() string {
 		if label == "" {
 			label = it.name
 		}
-		lineLen := len(label)
+		lineLen := lipgloss.Width(label)
 		if lineLen > maxLine {
 			maxLine = lineLen
 		}
 	}
-	boxWidth := min(maxLine+8, m.width-4)
+	// marker (2) + number prefix (3) + border/padding (4) + slack.
+	boxWidth := min(maxLine+11, m.width-4)
 	if boxWidth < 24 {
 		boxWidth = 24
 	}
@@ -1384,6 +1473,13 @@ func (m *tuiModel) renderPicker() string {
 		marker := "  "
 		if i == m.picker.selected {
 			marker = "> "
+		}
+		// Number prefix for the first 9 items — they can be picked directly
+		// with the 1-9 keys.
+		if i < 9 {
+			marker += fmt.Sprintf("%d. ", i+1)
+		} else {
+			marker += "   "
 		}
 		var label string
 		if it.summary != "" {
@@ -1459,15 +1555,7 @@ func (m *tuiModel) renderQuestionInput() string {
 
 		if editingOther {
 			// Show the input with cursor when selected.
-			before := m.questionInput[:m.questionCursorPos]
-			at := ""
-			if m.questionCursorPos < len(m.questionInput) {
-				at = string(m.questionInput[m.questionCursorPos])
-			}
-			after := ""
-			if m.questionCursorPos+1 < len(m.questionInput) {
-				after = m.questionInput[m.questionCursorPos+1:]
-			}
+			before, at, after := splitAtCursor(m.questionInput, m.questionCursorPos)
 
 			cursorChar := " "
 			if m.starVisible {
@@ -1513,15 +1601,7 @@ func (m *tuiModel) renderApprovalInput() string {
 		if i == m.approvalSelected {
 			if i == 2 {
 				// "Other" selected: show inline edit with cursor.
-				before := m.approvalInput[:m.approvalCursorPos]
-				at := ""
-				if m.approvalCursorPos < len(m.approvalInput) {
-					at = string(m.approvalInput[m.approvalCursorPos])
-				}
-				after := ""
-				if m.approvalCursorPos+1 < len(m.approvalInput) {
-					after = m.approvalInput[m.approvalCursorPos+1:]
-				}
+				before, at, after := splitAtCursor(m.approvalInput, m.approvalCursorPos)
 				cursorChar := " "
 				if m.starVisible {
 					cursorChar = "▌"
@@ -1600,15 +1680,16 @@ func (m *tuiModel) renderAutocomplete() string {
 
 	var parts []string
 	for i, s := range m.autocomplete.suggestions {
-		styled := s
+		// Pad every item to the same visual width so the row doesn't shift
+		// horizontally as the selection moves.
+		var styled string
 		if i == m.autocomplete.selected {
 			styled = lipgloss.NewStyle().
 				Foreground(lipgloss.Color("0")).
 				Background(lipgloss.Color("6")).
-				Padding(0, 1).
-				Render(s)
+				Render(" " + s + " ")
 		} else {
-			styled = dimStyle.Render(s)
+			styled = dimStyle.Render(" " + s + " ")
 		}
 		parts = append(parts, styled)
 	}
@@ -1653,11 +1734,7 @@ func (m *tuiModel) rebuildOutput() {
 			}
 			// Show brief tool result preview, same as streaming.
 			content := msg.OfTool.Content.OfString.Value
-			short := content
-			if len(short) > 120 {
-				short = short[:120] + "..."
-			}
-			m.push(roleAgentResult, renderToolResult(short))
+			m.push(roleAgentResult, renderToolResult(truncateStr(content, 120)))
 		}
 		// Interleave any command outputs that were emitted after this
 		// history message.
@@ -1767,7 +1844,7 @@ func (m *tuiModel) contentWidth() int {
 
 func (m *tuiModel) commitUser(text string) {
 	isCmd := strings.HasPrefix(text, "/")
-	prefix := "you> "
+	prefix := "❯ "
 	indent := strings.Repeat(" ", lipgloss.Width(prefix))
 	cw := m.contentWidth()
 	wrapWidth := cw - lipgloss.Width(prefix)
@@ -1788,20 +1865,17 @@ func (m *tuiModel) commitUser(text string) {
 }
 
 func (m *tuiModel) commitAgent(text string) {
-	prefix := "agent> "
-	indent := strings.Repeat(" ", lipgloss.Width(prefix))
+	// Agent text carries a green gutter bar down every line — the speaker is
+	// identified by the running color, not a prompt label.
+	bar := agentStyle.Render(agentBar) + " "
 	cw := m.contentWidth()
-	wrapWidth := cw - lipgloss.Width(prefix)
+	wrapWidth := cw - 2
 	if wrapWidth < 20 {
 		wrapWidth = 80
 	}
 	rendered := renderMarkdown(text, wrapWidth)
-	for i, line := range strings.Split(rendered, "\n") {
-		if i == 0 {
-			m.push(roleAgent, agentStyle.Render(prefix)+line)
-		} else {
-			m.push(roleAgent, indent+line)
-		}
+	for _, line := range strings.Split(rendered, "\n") {
+		m.push(roleAgent, bar+line)
 	}
 }
 
@@ -1822,6 +1896,29 @@ func (m *tuiModel) commitThinkingDetail(text string) {
 	}
 }
 
+// commitApproval pushes the approval question with the subject wrapped
+// explicitly: the viewport does not soft-wrap, and a long bash command must
+// stay fully readable — it is exactly what the user is being asked to allow.
+func (m *tuiModel) commitApproval(name, detail string) {
+	question := "approve " + name + "?"
+	indent := strings.Repeat(" ", lipgloss.Width(question)+1)
+	wrapWidth := m.contentWidth() - lipgloss.Width(indent)
+	if wrapWidth < 20 {
+		wrapWidth = 80
+	}
+	wrapped := wordWrap(detail, wrapWidth)
+	if len(wrapped) == 0 {
+		wrapped = []string{""}
+	}
+	for i, line := range wrapped {
+		if i == 0 {
+			m.push(roleAgent, approvalStyle.Render(question)+" "+line)
+		} else {
+			m.push(roleAgent, indent+line)
+		}
+	}
+}
+
 func (m *tuiModel) commitCommand(text string) {
 	prefix := dimStyle.Render("  ")
 	indent := dimStyle.Render("  ")
@@ -1837,6 +1934,51 @@ func (m *tuiModel) commitCommand(text string) {
 			m.push(roleCommand, indent+line)
 		}
 	}
+}
+
+// --- rune helpers ---
+
+// Cursor positions in the inline inputs (approval reason, question "other"
+// answer) are rune indices, not byte offsets, so multibyte input (CJK, emoji)
+// moves and edits cleanly.
+
+func runeLen(s string) int { return len([]rune(s)) }
+
+func insertRunes(s string, pos int, ins string) string {
+	r := []rune(s)
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(r) {
+		pos = len(r)
+	}
+	return string(r[:pos]) + ins + string(r[pos:])
+}
+
+func deleteRune(s string, pos int) string {
+	r := []rune(s)
+	if pos < 0 || pos >= len(r) {
+		return s
+	}
+	return string(r[:pos]) + string(r[pos+1:])
+}
+
+// splitAtCursor splits s at rune position pos into (before, rune-at, after)
+// for rendering an inline cursor.
+func splitAtCursor(s string, pos int) (before, at, after string) {
+	r := []rune(s)
+	if pos < 0 {
+		pos = 0
+	}
+	if pos > len(r) {
+		pos = len(r)
+	}
+	before = string(r[:pos])
+	if pos < len(r) {
+		at = string(r[pos])
+		after = string(r[pos+1:])
+	}
+	return
 }
 
 // --- word wrap ---

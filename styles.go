@@ -11,6 +11,10 @@ import (
 	"github.com/openai/openai-go"
 )
 
+// agentBar is the gutter glyph prefixed (in green) to every line of agent
+// output.
+const agentBar = "▎"
+
 func boolPtr(b bool) *bool       { return &b }
 func uintPtr(u uint) *uint       { return &u }
 func stringPtr(s string) *string { return &s }
@@ -29,7 +33,8 @@ var (
 	cmdTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("12"))
 
-	// Agent prefix: bold green.
+	// Agent gutter: bold green. Agent messages are marked by a colored bar
+	// running down the left of the block, not a prompt label.
 	agentStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("2"))
@@ -247,10 +252,6 @@ func bannerLines(a *agent) []string {
 	return lines
 }
 
-func renderYou(line string) string {
-	return youStyle.Render("you>") + " " + line
-}
-
 // Markdown renderer, cached by wrap width. The TUI update loop is
 // single-goroutine, so no locking is needed.
 var (
@@ -334,12 +335,11 @@ func minimalMarkdownStyle() ansi.StyleConfig {
 			Ticked:   "[✓] ",
 			Unticked: "[ ] ",
 		},
+		// Inline code: colored foreground only. A background slab (color 8)
+		// reads as mid-gray on light terminal themes and hurts readability.
 		Code: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:           stringPtr("3"),
-				BackgroundColor: stringPtr("8"),
-				Prefix:          " ",
-				Suffix:          " ",
+				Color: stringPtr("3"),
 			},
 		},
 		CodeBlock: ansi.StyleCodeBlock{
@@ -399,10 +399,6 @@ func renderMarkdown(text string, width int) string {
 	return strings.Trim(out, "\n")
 }
 
-func renderAgent(line string) string {
-	return agentStyle.Render("agent>") + " " + line
-}
-
 func renderThinkStar(visible bool) string {
 	if visible {
 		return thinkStyle.Render("✦")
@@ -416,19 +412,36 @@ func renderReasoning(line string) string {
 
 func renderCollapsedThinking(reasoning string) string {
 	summary := "thought about it"
+	if words := len(strings.Fields(reasoning)); words > 0 {
+		summary = fmt.Sprintf("thought about it (%d words · Ctrl-O to expand)", words)
+	}
 	// Render the star at full magenta (not faint) so it stays visible, then
 	// the summary text dim/italic.
 	return thinkStyle.Render("✦") + " " + reasonStyle.Render(summary)
 }
 
 func renderTool(name, detail string) string {
-	return toolDotStyle.Render("●") + " " + toolDotStyle.Render(name) + " " + dimStyle.Render(detail)
+	return renderToolWithDot("●", name, detail)
+}
+
+// renderToolWithDot renders a tool-call line with the given status dot (the
+// pending-tool display blinks ●/○). The detail is flattened to one line and
+// truncated: the viewport does not soft-wrap, so an untruncated multi-line
+// command would otherwise be clipped or break the layout.
+func renderToolWithDot(dot, name, detail string) string {
+	detail = truncateStr(strings.Join(strings.Fields(detail), " "), 100)
+	return toolDotStyle.Render(dot) + " " + toolDotStyle.Render(name) + " " + dimStyle.Render(detail)
 }
 
 func renderToolResult(result string) string {
 	lines := strings.Split(result, "\n")
 	for i, line := range lines {
-		lines[i] = dimStyle.Render("  " + line)
+		// Elbow connector visually attaches the result to its tool line.
+		conn := "    "
+		if i == 0 {
+			conn = "  └ "
+		}
+		lines[i] = dimStyle.Render(conn + line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -441,15 +454,14 @@ func renderOK(msg string) string {
 	return okStyle.Render("✓ " + msg)
 }
 
-func renderApproval(name, detail string) string {
-	return approvalStyle.Render("run "+name+"?") + " " + dimStyle.Render(detail)
-}
-
+// truncateStr shortens s to maxLen runes (not bytes), so multibyte text is
+// never cut mid-character.
 func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	r := []rune(s)
+	if len(r) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(r[:maxLen]) + "..."
 }
 
 // toolCallBrief extracts a short description from a tool call's arguments.
