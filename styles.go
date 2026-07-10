@@ -11,6 +11,10 @@ import (
 	"github.com/openai/openai-go"
 )
 
+// agentBar is the gutter glyph prefixed (in green) to every line of agent
+// output.
+const agentBar = "▎"
+
 func boolPtr(b bool) *bool       { return &b }
 func uintPtr(u uint) *uint       { return &u }
 func stringPtr(s string) *string { return &s }
@@ -29,7 +33,8 @@ var (
 	cmdTextStyle = lipgloss.NewStyle().
 			Foreground(lipgloss.Color("12"))
 
-	// Agent prefix: bold green.
+	// Agent gutter: bold green. Agent messages are marked by a colored bar
+	// running down the left of the block, not a prompt label.
 	agentStyle = lipgloss.NewStyle().
 			Bold(true).
 			Foreground(lipgloss.Color("2"))
@@ -247,10 +252,6 @@ func bannerLines(a *agent) []string {
 	return lines
 }
 
-func renderYou(line string) string {
-	return youStyle.Render("you>") + " " + line
-}
-
 // Markdown renderer, cached by wrap width. The TUI update loop is
 // single-goroutine, so no locking is needed.
 var (
@@ -334,12 +335,11 @@ func minimalMarkdownStyle() ansi.StyleConfig {
 			Ticked:   "[✓] ",
 			Unticked: "[ ] ",
 		},
+		// Inline code: colored foreground only. A background slab (color 8)
+		// reads as mid-gray on light terminal themes and hurts readability.
 		Code: ansi.StyleBlock{
 			StylePrimitive: ansi.StylePrimitive{
-				Color:           stringPtr("3"),
-				BackgroundColor: stringPtr("8"),
-				Prefix:          " ",
-				Suffix:          " ",
+				Color: stringPtr("3"),
 			},
 		},
 		CodeBlock: ansi.StyleCodeBlock{
@@ -399,10 +399,6 @@ func renderMarkdown(text string, width int) string {
 	return strings.Trim(out, "\n")
 }
 
-func renderAgent(line string) string {
-	return agentStyle.Render("agent>") + " " + line
-}
-
 func renderThinkStar(visible bool) string {
 	if visible {
 		return thinkStyle.Render("✦")
@@ -416,19 +412,36 @@ func renderReasoning(line string) string {
 
 func renderCollapsedThinking(reasoning string) string {
 	summary := "thought about it"
+	if words := len(strings.Fields(reasoning)); words > 0 {
+		summary = fmt.Sprintf("thought about it (%d words · Ctrl-O to expand)", words)
+	}
 	// Render the star at full magenta (not faint) so it stays visible, then
 	// the summary text dim/italic.
 	return thinkStyle.Render("✦") + " " + reasonStyle.Render(summary)
 }
 
 func renderTool(name, detail string) string {
-	return toolDotStyle.Render("●") + " " + toolDotStyle.Render(name) + " " + dimStyle.Render(detail)
+	return renderToolWithDot("●", name, detail)
+}
+
+// renderToolWithDot renders a tool-call line with the given status dot (the
+// pending-tool display blinks ●/○). The detail is flattened to one line and
+// truncated: the viewport does not soft-wrap, so an untruncated multi-line
+// command would otherwise be clipped or break the layout.
+func renderToolWithDot(dot, name, detail string) string {
+	detail = truncateStr(strings.Join(strings.Fields(detail), " "), 100)
+	return toolDotStyle.Render(dot) + " " + toolDotStyle.Render(name) + " " + dimStyle.Render(detail)
 }
 
 func renderToolResult(result string) string {
 	lines := strings.Split(result, "\n")
 	for i, line := range lines {
-		lines[i] = dimStyle.Render("  " + line)
+		// Elbow connector visually attaches the result to its tool line.
+		conn := "    "
+		if i == 0 {
+			conn = "  └ "
+		}
+		lines[i] = dimStyle.Render(conn + line)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -441,15 +454,114 @@ func renderOK(msg string) string {
 	return okStyle.Render("✓ " + msg)
 }
 
-func renderApproval(name, detail string) string {
-	return approvalStyle.Render("run "+name+"?") + " " + dimStyle.Render(detail)
+// Renderer for highlighted shell blocks in approval prompts, cached by wrap
+// width like mdRenderer. It is the same glamour dependency; the only config
+// difference is a chroma theme on code blocks so ```bash fences get syntax
+// highlighting instead of the faint style used for agent-output code.
+var (
+	shellRenderer      *glamour.TermRenderer
+	shellRendererWidth int
+)
+
+// highlightShell renders a shell command as a ```bash markdown code block.
+// The "gruvbox" theme forces a color on every token (plain text included),
+// which is required because the block sits on the forced dark slab of
+// renderShellBlock — theme-following colors could vanish there. Its warm
+// palette (orange operators/builtins, yellow strings) is also the closest
+// chroma match to the render-markdown.nvim look. Falls back to the raw text
+// on any error.
+func highlightShell(cmd string, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+	if shellRenderer == nil || shellRendererWidth != width {
+		noMargin := uint(0)
+		cfg := minimalMarkdownStyle()
+		cfg.Document.Margin = &noMargin
+		cfg.CodeBlock.Margin = &noMargin
+		cfg.CodeBlock.StylePrimitive.Faint = boolPtr(false)
+		cfg.CodeBlock.Theme = "gruvbox"
+		r, err := glamour.NewTermRenderer(
+			glamour.WithStyles(cfg),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			return cmd
+		}
+		shellRenderer = r
+		shellRendererWidth = width
+	}
+	out, err := shellRenderer.Render("```bash\n" + cmd + "\n```")
+	if err != nil {
+		return cmd
+	}
+	// Strip glamour's right-padding and the blank padded lines it emits
+	// around the block.
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " ")
+	}
+	for len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
 }
 
+// The approval shell block is a forced dark slab (GitHub-style code block),
+// so everything drawn on it uses fixed 256-palette colors instead of the
+// theme-following ANSI colors used elsewhere: the slab looks the same on
+// light and dark terminals.
+const shellBlockBGSeq = "\x1b[48;5;236m"
+
+// Header glyph and language tag stay muted gray, like an editor's code-block
+// header — the command below is the colorful part.
+var shellBlockHeaderStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+// shellBlockLine puts content on the slab, padded to blockW with one space
+// of horizontal padding. Chroma/lipgloss reset the background at every SGR
+// reset, so the background is re-armed after each one.
+func shellBlockLine(content string, blockW int) string {
+	pad := blockW - 1 - lipgloss.Width(content)
+	if pad < 1 {
+		pad = 1
+	}
+	body := strings.ReplaceAll(content, "\x1b[0m", "\x1b[0m"+shellBlockBGSeq)
+	return shellBlockBGSeq + " " + body + strings.Repeat(" ", pad) + "\x1b[0m"
+}
+
+// renderShellBlock renders a shell command as a GitHub-style code block: a
+// header row with a terminal glyph and language tag, then the command
+// syntax-highlighted on a dark background. The command is soft-wrapped to
+// fit but never reformatted — what the user reads is exactly what will run.
+func renderShellBlock(cmd string, width int) []string {
+	if width < 20 {
+		width = 80
+	}
+	inner := width - 2 // one space of slab padding each side
+	wrapped := strings.Join(wordWrap(cmd, inner), "\n")
+	body := strings.Split(highlightShell(wrapped, inner), "\n")
+
+	// The slab spans the full wrap width, like an editor code block.
+	header := shellBlockHeaderStyle.Render(">_ bash")
+	out := make([]string, 0, len(body)+1)
+	out = append(out, shellBlockLine(header, width))
+	for _, ln := range body {
+		out = append(out, shellBlockLine(ln, width))
+	}
+	return out
+}
+
+// truncateStr shortens s to maxLen runes (not bytes), so multibyte text is
+// never cut mid-character.
 func truncateStr(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	r := []rune(s)
+	if len(r) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(r[:maxLen]) + "..."
 }
 
 // toolCallBrief extracts a short description from a tool call's arguments.
