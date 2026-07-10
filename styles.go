@@ -454,6 +454,59 @@ func renderOK(msg string) string {
 	return okStyle.Render("✓ " + msg)
 }
 
+// Renderer for highlighted shell blocks in approval prompts, cached by wrap
+// width like mdRenderer. It is the same glamour dependency; the only config
+// difference is a chroma theme on code blocks so ```bash fences get syntax
+// highlighting instead of the faint style used for agent-output code.
+var (
+	shellRenderer      *glamour.TermRenderer
+	shellRendererWidth int
+)
+
+// highlightShell renders a shell command as a ```bash markdown code block.
+// The "friendly" theme leaves plain text at the default foreground, so it
+// stays readable on light and dark backgrounds. Falls back to the raw text
+// on any error.
+func highlightShell(cmd string, width int) string {
+	if width <= 0 {
+		width = 80
+	}
+	if shellRenderer == nil || shellRendererWidth != width {
+		noMargin := uint(0)
+		cfg := minimalMarkdownStyle()
+		cfg.Document.Margin = &noMargin
+		cfg.CodeBlock.Margin = &noMargin
+		cfg.CodeBlock.StylePrimitive.Faint = boolPtr(false)
+		cfg.CodeBlock.Theme = "friendly"
+		r, err := glamour.NewTermRenderer(
+			glamour.WithStyles(cfg),
+			glamour.WithWordWrap(width),
+		)
+		if err != nil {
+			return cmd
+		}
+		shellRenderer = r
+		shellRendererWidth = width
+	}
+	out, err := shellRenderer.Render("```bash\n" + cmd + "\n```")
+	if err != nil {
+		return cmd
+	}
+	// Strip glamour's right-padding and the blank padded lines it emits
+	// around the block.
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		lines[i] = strings.TrimRight(ln, " ")
+	}
+	for len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return strings.Join(lines, "\n")
+}
+
 // truncateStr shortens s to maxLen runes (not bytes), so multibyte text is
 // never cut mid-character.
 func truncateStr(s string, maxLen int) string {

@@ -118,6 +118,13 @@ type tuiModel struct {
 	// second Ctrl-C quits. Any other key clears it.
 	quitConfirm bool
 
+	// Approval block bookkeeping: where the block starts in committed (so it
+	// can be folded to one outcome line once decided) and what is being
+	// approved (for the denied outcome line).
+	approvalStart  int
+	approvalName   string
+	approvalDetail string
+
 	// Question state (ask_user_question tool).
 	questionActive     bool
 	questionText       string
@@ -601,24 +608,12 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.Type {
 			case tea.KeyCtrlC:
 				// Cancel the agent turn outright.
-				m.waitingApproval = false
 				m.cancel()
 				m.ctx, m.cancel = context.WithCancel(context.Background())
-				if m.approvalCh != nil {
-					select {
-					case m.approvalCh <- approvalAnswer{approved: false}:
-					default:
-					}
-				}
-				m.approvalCh = nil
-				m.updateViewportContent()
+				m.resolveApproval(approvalAnswer{approved: false})
 				return m, waitForMsg(m.msgCh)
 			case tea.KeyEscape:
-				m.waitingApproval = false
-				if m.approvalCh != nil {
-					m.approvalCh <- approvalAnswer{approved: false}
-				}
-				m.approvalCh = nil
+				m.resolveApproval(approvalAnswer{approved: false})
 				return m, waitForMsg(m.msgCh)
 			case tea.KeyUp:
 				if m.approvalSelected > 0 {
@@ -657,12 +652,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.updateViewportContent()
 				return m, nil
 			case tea.KeyEnter:
-				answer := m.selectedApprovalAnswer()
-				m.waitingApproval = false
-				if m.approvalCh != nil {
-					m.approvalCh <- answer
-				}
-				m.approvalCh = nil
+				m.resolveApproval(m.selectedApprovalAnswer())
 				return m, waitForMsg(m.msgCh)
 			case tea.KeyBackspace:
 				if m.approvalSelected == 2 && m.approvalCursorPos > 0 {
@@ -685,12 +675,7 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.approvalSelected = idx
 					if idx < 2 {
 						// Yes or No: submit immediately.
-						answer := m.selectedApprovalAnswer()
-						m.waitingApproval = false
-						if m.approvalCh != nil {
-							m.approvalCh <- answer
-						}
-						m.approvalCh = nil
+						m.resolveApproval(m.selectedApprovalAnswer())
 						return m, waitForMsg(m.msgCh)
 					}
 					// "Other": select it so they can type.
@@ -701,18 +686,10 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.approvalSelected != 2 {
 					switch s {
 					case "y", "Y":
-						m.waitingApproval = false
-						if m.approvalCh != nil {
-							m.approvalCh <- approvalAnswer{approved: true}
-						}
-						m.approvalCh = nil
+						m.resolveApproval(approvalAnswer{approved: true})
 						return m, waitForMsg(m.msgCh)
 					case "n", "N":
-						m.waitingApproval = false
-						if m.approvalCh != nil {
-							m.approvalCh <- approvalAnswer{approved: false}
-						}
-						m.approvalCh = nil
+						m.resolveApproval(approvalAnswer{approved: false})
 						return m, waitForMsg(m.msgCh)
 					}
 				}
@@ -1896,27 +1873,76 @@ func (m *tuiModel) commitThinkingDetail(text string) {
 	}
 }
 
-// commitApproval pushes the approval question with the subject wrapped
-// explicitly: the viewport does not soft-wrap, and a long bash command must
-// stay fully readable — it is exactly what the user is being asked to allow.
+// commitApproval pushes the approval question with the subject on its own
+// highlighted line(s). The subject is shown verbatim — soft-wrapped to the
+// viewport width but never reformatted — so what the user reads is exactly
+// what will run.
 func (m *tuiModel) commitApproval(name, detail string) {
-	question := "approve " + name + "?"
-	indent := strings.Repeat(" ", lipgloss.Width(question)+1)
-	wrapWidth := m.contentWidth() - lipgloss.Width(indent)
+	start := len(m.committed)
+	// The preceding tool-call line shows the same subject and is re-displayed
+	// after approval; fold it into the block so it doesn't linger twice.
+	if start > 0 && m.committed[start-1].role == roleAgentTool {
+		start--
+	}
+	m.approvalStart = start
+	m.approvalName = name
+	m.approvalDetail = detail
+
+	m.push(roleAgent, approvalStyle.Render("approve "+name+"?"))
+	wrapWidth := m.contentWidth() - 2
 	if wrapWidth < 20 {
 		wrapWidth = 80
 	}
-	wrapped := wordWrap(detail, wrapWidth)
-	if len(wrapped) == 0 {
-		wrapped = []string{""}
+	if cmd, ok := strings.CutPrefix(detail, "$ "); ok {
+		// Bash: shown as a syntax-highlighted ```bash block. Soft-wrap
+		// before highlighting — code blocks keep lines verbatim and the
+		// viewport does not wrap.
+		wrapped := strings.Join(wordWrap(cmd, wrapWidth), "\n")
+		for _, line := range strings.Split(highlightShell(wrapped, wrapWidth), "\n") {
+			m.push(roleAgent, "  "+line)
+		}
+		return
 	}
-	for i, line := range wrapped {
-		if i == 0 {
-			m.push(roleAgent, approvalStyle.Render(question)+" "+line)
-		} else {
-			m.push(roleAgent, indent+line)
+	for _, line := range wordWrap(detail, wrapWidth) {
+		m.push(roleAgent, "  "+cmdTextStyle.Render(line))
+	}
+}
+
+// foldApproval collapses the decided approval block to a single outcome line
+// so it stops occupying transcript space.
+func (m *tuiModel) foldApproval(answer approvalAnswer) {
+	if m.approvalStart >= 0 && m.approvalStart <= len(m.committed) {
+		m.committed = m.committed[:m.approvalStart]
+	}
+	m.approvalStart = -1
+	if answer.approved {
+		// The approved tool call is re-displayed (with its detail) right
+		// after this line, so the outcome stays terse.
+		m.push(roleAgent, okStyle.Render("✓")+" "+dimStyle.Render("approved"))
+		return
+	}
+	// A denied call never runs, so keep what was denied in the transcript.
+	brief := truncateStr(strings.Join(strings.Fields(m.approvalName+" "+m.approvalDetail), " "), 80)
+	line := errStyle.Render("✗") + " " + dimStyle.Render("denied "+brief)
+	if answer.reason != "" {
+		line += " " + dimStyle.Render("— "+answer.reason)
+	}
+	m.push(roleAgent, line)
+}
+
+// resolveApproval folds the approval block into its outcome line and sends
+// the answer to the waiting agent goroutine.
+func (m *tuiModel) resolveApproval(answer approvalAnswer) {
+	m.waitingApproval = false
+	m.foldApproval(answer)
+	if m.approvalCh != nil {
+		select {
+		case m.approvalCh <- answer:
+		default:
 		}
 	}
+	m.approvalCh = nil
+	m.updateViewportContent()
 }
 
 func (m *tuiModel) commitCommand(text string) {
