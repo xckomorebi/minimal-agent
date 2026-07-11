@@ -1381,7 +1381,7 @@ func (m tuiModel) View() string {
 		ctrlCLabel = "Ctrl-C again to quit"
 	}
 	ctxPct := ""
-	if t := m.agent.tokenUsage.Total; t > 0 {
+	if t := m.agent.tokenUsage.Prompt; t > 0 {
 		if cw := m.agent.contextWindow(); cw > 0 {
 			ctxPct = fmt.Sprintf(" · %d%% ctx", t*100/cw)
 		}

@@ -268,8 +268,8 @@ func cmdContext(a *agent, parts []string) string {
 	if tu.Total == 0 {
 		return fmt.Sprintf("no token usage data yet (context window: %s)", formatTokens(cw))
 	}
-	pct := float64(tu.Total) / float64(cw) * 100
-	return fmt.Sprintf("token usage (current):\n  prompt       %s\n  completion   %s\n  total        %s\n  context win  %s\n  used         %.1f%%",
+	pct := float64(tu.Prompt) / float64(cw) * 100
+	return fmt.Sprintf("token usage (current):\n  prompt       %s\n  completion   %s\n  total        %s\n  context win  %s\n  used         %.1f%% (prompt)",
 		formatTokens(tu.Prompt),
 		formatTokens(tu.Completion),
 		formatTokens(tu.Total),

@@ -282,6 +282,12 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 		stream := a.client.Chat.Completions.NewStreaming(ctx, params)
 		acc := openai.ChatCompletionAccumulator{}
 
+		// lastUsage tracks the most recent non-zero usage chunk. Some API
+		// providers (e.g. DeepSeek) include usage in every streaming chunk;
+		// the SDK accumulator sums them with +=, producing inflated counts.
+		// We capture the last non-zero usage instead.
+		var lastUsage openai.CompletionUsage
+
 		for stream.Next() {
 			select {
 			case <-ctx.Done():
@@ -292,6 +298,14 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 
 			chunk := stream.Current()
 			acc.AddChunk(chunk)
+
+			// Capture usage from chunks that carry it. With the standard
+			// OpenAI API only the final chunk has usage; with other providers
+			// every chunk may carry it. Either way, the last non-zero one is
+			// the correct total for the entire request.
+			if cu := chunk.Usage; cu.PromptTokens > 0 || cu.CompletionTokens > 0 {
+				lastUsage = cu
+			}
 
 			if reasoning := extractReasoning(chunk.RawJSON()); reasoning != "" {
 				a.reasoningAcc += reasoning
@@ -312,7 +326,7 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 			return
 		}
 
-		u := acc.Usage
+		u := lastUsage
 		a.tokenUsage.Prompt = u.PromptTokens
 		a.tokenUsage.Completion = u.CompletionTokens
 		a.tokenUsage.Total = u.TotalTokens
