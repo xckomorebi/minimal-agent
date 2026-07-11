@@ -153,15 +153,19 @@ func builtinTools() []openai.ChatCompletionToolParam {
 			prop("command", "string", "the shell command to run"),
 			prop("requires_approval", "boolean", "set true for destructive/irreversible operations (writes, deletes, installs, network calls, git push); false for read-only inspection (ls, cat, grep, git status, git diff, go build, etc.)"),
 		),
-		toolDef("read", "Read and return the full contents of a file at the given path.",
-			prop("path", "string", "path to the file to read"),
+		toolDefOpt("read",
+			"Read and return the contents of a file at the given file_path. By default reads the entire file. Use offset and limit to read a specific range of lines (1-indexed). When offset or limit is used, line numbers are prepended to each line in the output.",
+			map[string]bool{"offset": true, "limit": true},
+			prop("file_path", "string", "the path to the file to read"),
+			prop("offset", "integer", "line number to start reading from (1-indexed; default 1)"),
+			prop("limit", "integer", "maximum number of lines to read (default: read to end of file)"),
 		),
 		toolDef("write", "Create or overwrite a file with the given content. Use this for new files; prefer edit for modifying existing files. Creating a new file is unrestricted, but overwriting an existing one follows the same rule as edit: you must already know its current contents (from an earlier read/write/edit this session), and it must not have changed on disk since — otherwise read it again first.",
-			prop("path", "string", "path to the file to write"),
+			prop("file_path", "string", "the path to the file to write"),
 			prop("content", "string", "the full content to write to the file"),
 		),
 		toolDef("edit", "Modify an existing file by replacing a single, unique occurrence of old_string with new_string. old_string must match the file byte-for-byte (including whitespace) and appear exactly once; include enough surrounding context to make it unambiguous. Editing only requires that you already know the file's current contents — from reading it earlier this session or from your own prior write/edit; you need not re-read right before each edit. Edit fails only if you have never seen the file, or if it changed on disk since you last saw it (read it again to pick up the new contents).",
-			prop("path", "string", "path to the file to edit"),
+			prop("file_path", "string", "the path to the file to edit"),
 			prop("old_string", "string", "the exact existing text to replace; must be unique within the file"),
 			prop("new_string", "string", "the replacement text"),
 		),
@@ -249,65 +253,90 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 
 func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
-		Path string `json:"path"`
+		FilePath string `json:"file_path"`
+		Offset   *int   `json:"offset,omitempty"`
+		Limit    *int   `json:"limit,omitempty"`
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "..."}`, call.ID)
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.FilePath == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"file_path": "..."}`, call.ID)
 	}
 
-	data, err := os.ReadFile(args.Path)
+	data, err := os.ReadFile(args.FilePath)
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
-	a.rememberFile(args.Path)
+	a.rememberFile(args.FilePath)
 	if len(data) == 0 {
 		return openai.ToolMessage("(empty file)", call.ID)
 	}
-	return openai.ToolMessage(string(data), call.ID)
+
+	// Full read (no offset/limit) — return raw contents.
+	if args.Offset == nil && args.Limit == nil {
+		return openai.ToolMessage(string(data), call.ID)
+	}
+
+	// Partial read — return with line numbers.
+	lines := strings.Split(string(data), "\n")
+	start := 1
+	if args.Offset != nil && *args.Offset > 1 {
+		start = *args.Offset
+	}
+	end := len(lines)
+	if args.Limit != nil && *args.Limit >= 0 && start+*args.Limit-1 < end {
+		end = start + *args.Limit - 1
+	}
+	if start > len(lines) {
+		return openai.ToolMessage(fmt.Sprintf("(line %d is beyond end of file; file has %d lines)", start, len(lines)), call.ID)
+	}
+	var b strings.Builder
+	for i := start; i <= end; i++ {
+		fmt.Fprintf(&b, "%6d\t%s\n", i, lines[i-1])
+	}
+	return openai.ToolMessage(b.String(), call.ID)
 }
 
 func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
-		Path    string `json:"path"`
-		Content string `json:"content"`
+		FilePath string `json:"file_path"`
+		Content  string `json:"content"`
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID)
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.FilePath == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"file_path": "...", "content": "..."}`, call.ID)
 	}
 
 	// Overwriting an existing file follows the same freshness rule as edit: you
 	// must already know its current contents. Creating a new file is unrestricted.
-	if _, err := os.Stat(args.Path); err == nil {
-		if msg := a.checkFileFresh(args.Path); msg != "" {
+	if _, err := os.Stat(args.FilePath); err == nil {
+		if msg := a.checkFileFresh(args.FilePath); msg != "" {
 			return openai.ToolMessage(msg, call.ID)
 		}
 	}
 
 	// Approval is handled by the TUI before this is called.
 
-	if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
+	if err := os.WriteFile(args.FilePath, []byte(args.Content), 0644); err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
-	a.rememberFile(args.Path)
-	slog.Debug("write completed", "path", args.Path, "bytes", len(args.Content))
-	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID)
+	a.rememberFile(args.FilePath)
+	slog.Debug("write completed", "path", args.FilePath, "bytes", len(args.Content))
+	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.FilePath), call.ID)
 }
 
 func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
-		Path      string `json:"path"`
+		FilePath  string `json:"file_path"`
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" || args.OldString == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID)
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.FilePath == "" || args.OldString == "" {
+		return openai.ToolMessage(`error: invalid tool input; expected {"file_path": "...", "old_string": "...", "new_string": "..."}`, call.ID)
 	}
 
-	if msg := a.checkFileFresh(args.Path); msg != "" {
+	if msg := a.checkFileFresh(args.FilePath); msg != "" {
 		return openai.ToolMessage(msg, call.ID)
 	}
 
-	data, err := os.ReadFile(args.Path)
+	data, err := os.ReadFile(args.FilePath)
 	if err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
@@ -316,20 +345,20 @@ func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	switch strings.Count(content, args.OldString) {
 	case 1:
 	case 0:
-		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID)
+		return openai.ToolMessage("error: old_string not found in "+args.FilePath+"; read the file and retry with text that matches exactly", call.ID)
 	default:
-		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID)
+		return openai.ToolMessage("error: old_string matches multiple times in "+args.FilePath+"; add surrounding context to make it unique", call.ID)
 	}
 
 	// Approval is handled by the TUI before this is called.
 
 	updated := strings.Replace(content, args.OldString, args.NewString, 1)
-	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil {
+	if err := os.WriteFile(args.FilePath, []byte(updated), 0644); err != nil {
 		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
-	a.rememberFile(args.Path)
-	slog.Debug("edit completed", "path", args.Path, "old_len", len(args.OldString), "new_len", len(args.NewString))
-	return openai.ToolMessage("edited "+args.Path, call.ID)
+	a.rememberFile(args.FilePath)
+	slog.Debug("edit completed", "path", args.FilePath, "old_len", len(args.OldString), "new_len", len(args.NewString))
+	return openai.ToolMessage("edited "+args.FilePath, call.ID)
 }
 
 // ddgSearchRate limits how fast we hit DuckDuckGo.

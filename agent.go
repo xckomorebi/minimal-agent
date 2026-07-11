@@ -499,7 +499,9 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 	var args struct {
 		Command          string `json:"command"`
 		RequiresApproval bool   `json:"requires_approval"`
-		Path             string `json:"path"`
+		FilePath         string `json:"file_path"`
+		Offset           *int   `json:"offset,omitempty"`
+		Limit            *int   `json:"limit,omitempty"`
 		Content          string `json:"content"`
 		OldString        string `json:"old_string"`
 		NewString        string `json:"new_string"`
@@ -517,14 +519,23 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 		return args.RequiresApproval, name, detail
 	case "write":
 		name = "write"
-		detail = fmt.Sprintf("%s (%d bytes)", relPath(args.Path), len(args.Content))
+		detail = fmt.Sprintf("%s (%d bytes)", relPath(args.FilePath), len(args.Content))
 		return !a.autoEdit(), name, detail
 	case "edit":
 		name = "edit"
-		detail = relPath(args.Path)
+		detail = relPath(args.FilePath)
 		return !a.autoEdit(), name, detail
 	case "read":
-		return false, "read", relPath(args.Path)
+		detail := relPath(args.FilePath)
+		if args.Offset != nil {
+			start := *args.Offset
+			if args.Limit != nil {
+				detail = fmt.Sprintf("%s:%d-%d", detail, start, start+*args.Limit-1)
+			} else {
+				detail = fmt.Sprintf("%s:%d+", detail, start)
+			}
+		}
+		return false, "read", detail
 	case "web-search":
 		return false, "web-search", args.Query
 	case "web-fetch":
@@ -547,20 +558,20 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 // nil for other tools (or when the change can't be previewed).
 func (a *agent) toolDiffLines(call openai.ChatCompletionMessageToolCall) []string {
 	var args struct {
-		Path      string `json:"path"`
+		FilePath  string `json:"file_path"`
 		Content   string `json:"content"`
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 	}
-	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" {
+	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.FilePath == "" {
 		return nil
 	}
 	switch call.Function.Name {
 	case "write":
-		existing, _ := os.ReadFile(args.Path)
+		existing, _ := os.ReadFile(args.FilePath)
 		return diffLines(string(existing), args.Content)
 	case "edit":
-		data, err := os.ReadFile(args.Path)
+		data, err := os.ReadFile(args.FilePath)
 		if err != nil {
 			return nil
 		}

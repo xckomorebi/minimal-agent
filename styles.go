@@ -543,7 +543,9 @@ func truncateStr(s string, maxLen int) string {
 func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 	var args struct {
 		Command  string `json:"command"`
-		Path     string `json:"path"`
+		FilePath string `json:"file_path"`
+		Offset   *int   `json:"offset,omitempty"`
+		Limit    *int   `json:"limit,omitempty"`
 		Content  string `json:"content"`
 		Query    string `json:"query"`
 		URL      string `json:"url"`
@@ -555,9 +557,20 @@ func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 	case "bash":
 		return "$ " + args.Command
 	case "write":
-		return fmt.Sprintf("%s (%d bytes)", relPath(args.Path), len(args.Content))
-	case "edit", "read":
-		return relPath(args.Path)
+		return fmt.Sprintf("%s (%d bytes)", relPath(args.FilePath), len(args.Content))
+	case "edit":
+		return relPath(args.FilePath)
+	case "read":
+		detail := relPath(args.FilePath)
+		if args.Offset != nil {
+			start := *args.Offset
+			if args.Limit != nil {
+				detail = fmt.Sprintf("%s:%d-%d", detail, start, start+*args.Limit-1)
+			} else {
+				detail = fmt.Sprintf("%s:%d+", detail, start)
+			}
+		}
+		return detail
 	case "web-search":
 		return args.Query
 	case "web-fetch":
