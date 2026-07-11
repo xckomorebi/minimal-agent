@@ -843,8 +843,20 @@ func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Arrow keys, page up/down, home/end: scroll viewport (always, even during streaming).
 		// But skip if autocomplete is showing (handled above).
+		// Ctrl-N/Ctrl-P navigate within the textarea when it has multiple
+		// lines (emacs-style line navigation); otherwise they scroll the
+		// viewport like arrow keys.
+		if msg.Type == tea.KeyCtrlN || msg.Type == tea.KeyCtrlP {
+			if m.textarea.LineCount() > 1 {
+				cmds = append(cmds, m.feedTextarea(msg))
+				m.updateLiveAutocomplete()
+				return m, tea.Batch(cmds...)
+			}
+			var cmd tea.Cmd
+			m.viewport, cmd = m.viewport.Update(msg)
+			return m, cmd
+		}
 		if msg.Type == tea.KeyUp || msg.Type == tea.KeyDown ||
-			msg.Type == tea.KeyCtrlP || msg.Type == tea.KeyCtrlN ||
 			msg.Type == tea.KeyPgUp || msg.Type == tea.KeyPgDown ||
 			msg.Type == tea.KeyHome || msg.Type == tea.KeyEnd {
 			var cmd tea.Cmd
