@@ -403,7 +403,7 @@ func (a *agent) buildCompletionParams() openai.ChatCompletionNewParams {
 
 // processAssistantMessage appends the assistant message to history, stores
 // reasoning, and processes tool calls. Returns false if the turn should end
-// (denial, error, or no more tool calls to process).
+// (denial without reason, error, or no more tool calls to process).
 func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatCompletionMessage) bool {
 	param := msg.ToParam()
 	idx := len(a.history)
@@ -423,7 +423,7 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 	}
 
 	calls := msg.ToolCalls
-	denied := false
+	deniedNoReason := false
 	for i := range calls {
 		call := calls[i]
 		select {
@@ -455,7 +455,9 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 			if !answer.approved {
 				a.sendDisplay(toolResultDisplayMsg{result: "(denied)"})
 				a.history = append(a.history, toolDeniedMessage(call, answer.reason))
-				denied = true
+				if answer.reason == "" {
+					deniedNoReason = true
+				}
 				continue
 			}
 			// Re-send tool call display so the TUI re-enters the pending-tool
@@ -463,18 +465,15 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 			a.sendDisplay(toolCallDisplayMsg{name: toolName, detail: toolDetail})
 		}
 
-		result, toolDenied := a.runToolCall(ctx, call)
+		result := a.runToolCall(ctx, call)
 		a.history = append(a.history, result)
-		if toolDenied {
-			denied = true
-		}
 
 		if call.Function.Name != "read" && call.Function.Name != "skill" {
 			resultText := a.toolResultText(result)
 			a.sendDisplay(toolResultDisplayMsg{result: resultText})
 		}
 	}
-	if denied {
+	if deniedNoReason {
 		a.sendCritical(turnDoneMsg{})
 		return false
 	}
@@ -561,31 +560,31 @@ func (a *agent) toolDiffLines(call openai.ChatCompletionMessageToolCall) []strin
 	return nil
 }
 
-// runToolCall executes a tool call and returns the tool-result message and denied flag.
-func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+// runToolCall executes a tool call and returns the tool-result message.
+func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	// Route MCP-prefixed tool calls to the MCP layer.
 	if strings.HasPrefix(call.Function.Name, "mcp__") {
-		return a.runMCPTool(ctx, call), false
+		return a.runMCPTool(ctx, call)
 	}
 	switch call.Function.Name {
 	case "bash":
 		return a.runBash(ctx, call)
 	case "read":
-		return a.readFile(call), false
+		return a.readFile(call)
 	case "write":
 		return a.writeFile(call)
 	case "edit":
 		return a.editFile(call)
 	case "web-search":
-		return a.webSearch(ctx, call), false
+		return a.webSearch(ctx, call)
 	case "web-fetch":
-		return a.webFetch(ctx, call), false
+		return a.webFetch(ctx, call)
 	case "skill":
-		return a.runSkill(call), false
+		return a.runSkill(call)
 	case "ask_user_question":
-		return a.askUserQuestion(ctx, call), false
+		return a.askUserQuestion(ctx, call)
 	default:
-		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID), false
+		return openai.ToolMessage("error: unknown tool: "+call.Function.Name, call.ID)
 	}
 }
 

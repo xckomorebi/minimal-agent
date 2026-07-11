@@ -199,13 +199,13 @@ func allTools() []openai.ChatCompletionToolParam {
 
 // --- tool implementations ---
 
-func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Command          string `json:"command"`
 		RequiresApproval bool   `json:"requires_approval"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Command == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"command": "..."}`, call.ID), false
+		return openai.ToolMessage(`error: invalid tool input; expected {"command": "..."}`, call.ID)
 	}
 
 	// Approval is handled by the TUI before this is called.
@@ -218,7 +218,7 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 	cmd.Stderr = &out
 
 	if err := cmd.Start(); err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID), false
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 
 	done := make(chan error, 1)
@@ -230,7 +230,7 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 		if err != nil {
 			// Distinguish context cancel from real errors.
 			if ctx.Err() != nil {
-				return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID), false
+				return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
 			}
 			result += "\n[exit: " + err.Error() + "]"
 		}
@@ -238,12 +238,12 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 		if result == "" {
 			result = "(no output)"
 		}
-		return openai.ToolMessage(result, call.ID), false
+		return openai.ToolMessage(result, call.ID)
 	case <-ctx.Done():
 		// Kill the entire process group so children don't outlive the cancel.
 		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 		<-done
-		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID), false
+		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
 	}
 }
 
@@ -266,70 +266,70 @@ func (a *agent) readFile(call openai.ChatCompletionMessageToolCall) openai.ChatC
 	return openai.ToolMessage(string(data), call.ID)
 }
 
-func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+func (a *agent) writeFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Path    string `json:"path"`
 		Content string `json:"content"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID), false
+		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "content": "..."}`, call.ID)
 	}
 
 	// Overwriting an existing file follows the same freshness rule as edit: you
 	// must already know its current contents. Creating a new file is unrestricted.
 	if _, err := os.Stat(args.Path); err == nil {
 		if msg := a.checkFileFresh(args.Path); msg != "" {
-			return openai.ToolMessage(msg, call.ID), false
+			return openai.ToolMessage(msg, call.ID)
 		}
 	}
 
 	// Approval is handled by the TUI before this is called.
 
 	if err := os.WriteFile(args.Path, []byte(args.Content), 0644); err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID), false
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 	a.rememberFile(args.Path)
 	slog.Debug("write completed", "path", args.Path, "bytes", len(args.Content))
-	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID), false
+	return openai.ToolMessage(fmt.Sprintf("wrote %d bytes to %s", len(args.Content), args.Path), call.ID)
 }
 
-func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) (openai.ChatCompletionMessageParamUnion, bool) {
+func (a *agent) editFile(call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Path      string `json:"path"`
 		OldString string `json:"old_string"`
 		NewString string `json:"new_string"`
 	}
 	if err := json.Unmarshal([]byte(call.Function.Arguments), &args); err != nil || args.Path == "" || args.OldString == "" {
-		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID), false
+		return openai.ToolMessage(`error: invalid tool input; expected {"path": "...", "old_string": "...", "new_string": "..."}`, call.ID)
 	}
 
 	if msg := a.checkFileFresh(args.Path); msg != "" {
-		return openai.ToolMessage(msg, call.ID), false
+		return openai.ToolMessage(msg, call.ID)
 	}
 
 	data, err := os.ReadFile(args.Path)
 	if err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID), false
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 	content := string(data)
 
 	switch strings.Count(content, args.OldString) {
 	case 1:
 	case 0:
-		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID), false
+		return openai.ToolMessage("error: old_string not found in "+args.Path+"; read the file and retry with text that matches exactly", call.ID)
 	default:
-		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID), false
+		return openai.ToolMessage("error: old_string matches multiple times in "+args.Path+"; add surrounding context to make it unique", call.ID)
 	}
 
 	// Approval is handled by the TUI before this is called.
 
 	updated := strings.Replace(content, args.OldString, args.NewString, 1)
 	if err := os.WriteFile(args.Path, []byte(updated), 0644); err != nil {
-		return openai.ToolMessage("error: "+err.Error(), call.ID), false
+		return openai.ToolMessage("error: "+err.Error(), call.ID)
 	}
 	a.rememberFile(args.Path)
 	slog.Debug("edit completed", "path", args.Path, "old_len", len(args.OldString), "new_len", len(args.NewString))
-	return openai.ToolMessage("edited "+args.Path, call.ID), false
+	return openai.ToolMessage("edited "+args.Path, call.ID)
 }
 
 // ddgSearchRate limits how fast we hit DuckDuckGo.
