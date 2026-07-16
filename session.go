@@ -74,20 +74,73 @@ func (a *agent) loadSession(name string) error {
 	}
 
 	// Try new format first: {"config":..., "history":...}
-	var sf sessionFile
-	if err := json.Unmarshal(data, &sf); err == nil && sf.History != nil {
-		a.config = sf.Config
-		a.history = cleanHistory(sf.History)
-		if len(a.history) == 0 {
+	// We unmarshal history twice: once as []json.RawMessage to preserve
+	// extra fields (like reasoning_content) that the SDK drops during
+	// deserialization, and once as SDK types for the typed fields.
+	var raw struct {
+		Config     sessionConfig            `json:"config"`
+		History    []json.RawMessage        `json:"history"`
+		Summary    string                   `json:"summary"`
+		TokenUsage tokenUsage               `json:"token_usage"`
+		FileMtimes map[string]time.Time     `json:"file_mtimes"`
+	}
+	if err := json.Unmarshal(data, &raw); err == nil && raw.History != nil {
+		// Unmarshal each raw message into the SDK type, then clean in
+		// lockstep so indices stay aligned between raw and typed slices.
+		type msgPair struct {
+			raw  json.RawMessage
+			typed openai.ChatCompletionMessageParamUnion
+		}
+		var pairs []msgPair
+		for i, rawMsg := range raw.History {
+			var m openai.ChatCompletionMessageParamUnion
+			if err := json.Unmarshal(rawMsg, &m); err != nil {
+				return fmt.Errorf("corrupt session %q at message %d: %w", name, i, err)
+			}
+			if isEmptyMessage(m) {
+				continue
+			}
+			pairs = append(pairs, msgPair{raw: rawMsg, typed: m})
+		}
+		if len(pairs) == 0 {
 			return fmt.Errorf("empty session %q", name)
+		}
+
+		a.config = raw.Config
+		a.history = make([]openai.ChatCompletionMessageParamUnion, len(pairs))
+		for i, p := range pairs {
+			a.history[i] = p.typed
 		}
 		a.sessionName = name
 		a.sessionDirty = false
-		a.summary = sf.Summary
-		a.tokenUsage = sf.TokenUsage
-		a.fileMtimes = sf.FileMtimes
+		a.summary = raw.Summary
+		a.tokenUsage = raw.TokenUsage
+		a.fileMtimes = raw.FileMtimes
 		if a.summary != "" {
 			a.summaryGenerated = true
+		}
+
+		// Restore reasoning_content from the raw JSON. The SDK drops extra
+		// fields during deserialization, so we extract reasoning_content from
+		// the raw message and re-attach it via SetExtraFields. This also
+		// rebuilds the in-memory reasonings map for TUI rendering.
+		a.reasonings = nil
+		for i, p := range pairs {
+			if a.history[i].OfAssistant == nil {
+				continue
+			}
+			var probe struct {
+				ReasoningContent string `json:"reasoning_content"`
+			}
+			if json.Unmarshal(p.raw, &probe) == nil && probe.ReasoningContent != "" {
+				a.history[i].OfAssistant.SetExtraFields(map[string]any{
+					"reasoning_content": probe.ReasoningContent,
+				})
+				if a.reasonings == nil {
+					a.reasonings = make(map[int]string)
+				}
+				a.reasonings[i] = probe.ReasoningContent
+			}
 		}
 		slog.Debug("session loaded", "name", name, "msg_count", len(a.history), "summary", a.summary)
 		return nil

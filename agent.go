@@ -33,8 +33,9 @@ type agent struct {
 
 	// reasonings stores the full reasoning text for each assistant message in
 	// history, keyed by the message's index in the history slice. Reasoning is
-	// never persisted (API rejects it as input), but kept in memory so features
-	// like "show thinking detail" can expand collapsed blocks.
+	// persisted inline in the session JSON (as reasoning_content on assistant
+	// messages) and sent back to the API on subsequent turns. This in-memory
+	// map is used for TUI rendering (e.g. "show thinking detail").
 	reasonings   map[int]string
 	reasoningAcc string // accumulator during streaming
 
@@ -421,14 +422,18 @@ func (a *agent) buildCompletionParams() openai.ChatCompletionNewParams {
 func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatCompletionMessage) bool {
 	param := msg.ToParam()
 	idx := len(a.history)
-	a.history = append(a.history, param)
 	if a.reasoningAcc != "" {
+		// Attach reasoning_content to the assistant message param so it is
+		// included in subsequent API requests. Models like DeepSeek and GLM
+		// use this to maintain chain-of-thought context across turns.
+		param.SetExtraFields(map[string]any{"reasoning_content": a.reasoningAcc})
 		if a.reasonings == nil {
 			a.reasonings = make(map[int]string)
 		}
 		a.reasonings[idx] = a.reasoningAcc
 		a.reasoningAcc = ""
 	}
+	a.history = append(a.history, param)
 	a.sessionDirty = true
 
 	if len(msg.ToolCalls) == 0 {
