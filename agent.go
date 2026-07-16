@@ -225,6 +225,24 @@ func (a *agent) thinkingDetail() bool {
 	return false
 }
 
+// sendReasoning controls whether reasoning_content is included in assistant
+// messages sent to the API. When false, reasoning is still persisted in
+// session files and displayed in the TUI, but stripped from outgoing requests.
+func (a *agent) sendReasoning() bool {
+	if a.config.SendReasoning != nil {
+		return *a.config.SendReasoning
+	}
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.SendReasoning != nil {
+			return *p.SendReasoning
+		}
+		if c.SendReasoning != nil {
+			return *c.SendReasoning
+		}
+	}
+	return true
+}
+
 func effortString(e shared.ReasoningEffort) string {
 	switch e {
 	case shared.ReasoningEffortLow:
@@ -401,9 +419,13 @@ func (a *agent) doTurnNonStreaming(ctx context.Context) {
 // buildCompletionParams constructs the params shared by both streaming and
 // non-streaming paths.
 func (a *agent) buildCompletionParams() openai.ChatCompletionNewParams {
+	msgs := cleanHistory(a.history)
+	if !a.sendReasoning() {
+		stripReasoningContent(msgs)
+	}
 	params := openai.ChatCompletionNewParams{
 		Model:    openai.ChatModel(a.effectiveModel()),
-		Messages: cleanHistory(a.history),
+		Messages: msgs,
 		Tools:    a.tools,
 	}
 	if a.thinking() {
@@ -424,9 +446,12 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 	idx := len(a.history)
 	if a.reasoningAcc != "" {
 		// Attach reasoning_content to the assistant message param so it is
-		// included in subsequent API requests. Models like DeepSeek and GLM
-		// use this to maintain chain-of-thought context across turns.
-		param.SetExtraFields(map[string]any{"reasoning_content": a.reasoningAcc})
+		// included in subsequent API requests and persisted in session files.
+		// SetExtraFields must be called on the inner assistant param, not the
+		// union — the union's MarshalJSON delegates to the inner variant.
+		if param.OfAssistant != nil {
+			param.OfAssistant.SetExtraFields(map[string]any{"reasoning_content": a.reasoningAcc})
+		}
 		if a.reasonings == nil {
 			a.reasonings = make(map[int]string)
 		}

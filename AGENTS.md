@@ -66,6 +66,7 @@ Settings configurable via `~/.ma/settings.json`:
   "thinking": true,
   "thinking_effort": "medium",
   "thinking_detail": false,
+  "send_reasoning": true,
   "auto_edit": false,
   "context_window": 200000,
   "stream": true,
@@ -92,7 +93,8 @@ All keys are optional — unset keys fall through to the next priority level.
 
 - `profile`: name of the profile to activate. When set, the corresponding
   entry in `profiles` is used as the first source for `api_key`, `base_url`,
-  `model`, `thinking`, `thinking_effort`, `thinking_detail`, `auto_edit`,
+  `model`, `thinking`, `thinking_effort`, `thinking_detail`, `send_reasoning`,
+  `auto_edit`,
   `context_window`, `stream`, and `extra_http_headers`. Any field not set in
   the profile falls through to the top-level setting, then to lower layers.
   Can also be set per-invocation via `-profile` flag or switched at runtime
@@ -103,6 +105,12 @@ All keys are optional — unset keys fall through to the next priority level.
 - `thinking_detail`: when `false` (default), thinking streams in a rolling 10-line
   window and collapses to "thought about it" when done. When `true`, the full
   thinking text is expanded in the output.
+- `send_reasoning`: when `true` (default), `reasoning_content` from previous
+  assistant messages is included in API requests so the model can reference its
+  prior chain-of-thought. When `false`, reasoning is still persisted in session
+  files and displayed in the TUI, but stripped from outgoing requests. Useful
+  for providers that reject `reasoning_content` in input. Can also be toggled
+  at runtime via `/config send-reasoning`.
 - `stream`: when `true` (default), responses stream token-by-token over SSE.
   When `false`, responses arrive in a single non-streaming request.
 

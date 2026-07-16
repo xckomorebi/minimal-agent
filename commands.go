@@ -59,7 +59,7 @@ func init() {
 		"config": {
 			name:        "config",
 			description: "show or change configuration",
-			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail, stream.",
+			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail, send-reasoning, stream.",
 			handler:     cmdConfig,
 		},
 		"context": {
@@ -436,9 +436,10 @@ func (a *agent) handleConfigStr(args []string) string {
 		think := onOff(a.thinking())
 		effort := effortString(a.thinkingEffort())
 		detail := onOff(a.thinkingDetail())
+		sendReason := onOff(a.sendReasoning())
 		stream := onOff(a.stream())
-		return fmt.Sprintf("model         : %s %s\nauto-edit     : %s\nthinking      : %s\neffort        : %s\ndetail        : %s\nstream        : %s",
-			model, src, auto, think, effort, detail, stream)
+		return fmt.Sprintf("model           : %s %s\nauto-edit       : %s\nthinking        : %s\neffort          : %s\ndetail          : %s\nsend-reasoning  : %s\nstream          : %s",
+			model, src, auto, think, effort, detail, sendReason, stream)
 	}
 	switch args[0] {
 	case "model":
@@ -475,13 +476,18 @@ func (a *agent) handleConfigStr(args []string) string {
 		a.config.ThinkingDetail = &v
 		a.sessionDirty = true
 		return "thinking-detail: " + onOff(v)
+	case "send-reasoning":
+		v := !a.sendReasoning()
+		a.config.SendReasoning = &v
+		a.sessionDirty = true
+		return "send-reasoning: " + onOff(v)
 	case "stream":
 		v := !a.stream()
 		a.config.Stream = &v
 		a.sessionDirty = true
 		return "stream: " + onOff(v)
 	default:
-		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail, stream"
+		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail, send-reasoning, stream"
 	}
 }
 
@@ -638,7 +644,7 @@ func commandNames() []string {
 func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 	if len(args) == 0 {
 		if trailingSpace {
-			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model", "stream"}
+			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream"}
 		}
 		return nil // shouldn't happen: empty args without trailing space
 	}
@@ -653,7 +659,7 @@ func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 
 	// If there are no value args and no trailing space, suggest subcommand names.
 	if len(valueArgs) == 0 && !trailingSpace {
-		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "model", "stream"})
+		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream"})
 	}
 
 	// If there's one value arg and no trailing space, filter existing value completions.
@@ -668,7 +674,7 @@ func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 // autocompleteConfigValue returns completions for a config subcommand's value.
 func autocompleteConfigValue(subName, prefix string) []string {
 	switch subName {
-	case "thinking", "auto-edit", "thinking-detail", "stream":
+	case "thinking", "auto-edit", "thinking-detail", "send-reasoning", "stream":
 		if prefix == "" {
 			return []string{"on", "off"}
 		}

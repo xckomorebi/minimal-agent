@@ -23,6 +23,7 @@ type sessionConfig struct {
 	Thinking       *bool   `json:"thinking,omitempty"`
 	ThinkingEffort *string `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
+	SendReasoning  *bool   `json:"send_reasoning,omitempty"`
 	Stream         *bool   `json:"stream,omitempty"`
 }
 

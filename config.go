@@ -24,11 +24,12 @@ type globalConfig struct {
 	Thinking       *bool             `json:"thinking,omitempty"`
 	ThinkingEffort *string           `json:"thinking_effort,omitempty"`
 	ThinkingDetail *bool             `json:"thinking_detail,omitempty"`
+	SendReasoning  *bool             `json:"send_reasoning,omitempty"`
 	AutoEdit       *bool             `json:"auto_edit,omitempty"`
-	ContextWindow  *int64             `json:"context_window,omitempty"`
+	ContextWindow  *int64            `json:"context_window,omitempty"`
 	Stream         *bool             `json:"stream,omitempty"`
-	HTTPHeaders    map[string]string  `json:"extra_http_headers,omitempty"`
-	MCPServers     []mcpServerConfig  `json:"mcp_servers,omitempty"`
+	HTTPHeaders    map[string]string `json:"extra_http_headers,omitempty"`
+	MCPServers     []mcpServerConfig `json:"mcp_servers,omitempty"`
 	Profile        *string           `json:"profile,omitempty"`
 	Profiles       map[string]profileConfig `json:"profiles,omitempty"`
 }
@@ -37,16 +38,17 @@ type globalConfig struct {
 // active (via the "profile" key or -profile flag), its non-nil fields override
 // the top-level globalConfig fields of the same name.
 type profileConfig struct {
-	APIKey        *string           `json:"api_key,omitempty"`
-	BaseURL       *string           `json:"base_url,omitempty"`
-	Model         *string           `json:"model,omitempty"`
-	Thinking      *bool             `json:"thinking,omitempty"`
-	ThinkingEffort *string          `json:"thinking_effort,omitempty"`
-	ThinkingDetail *bool            `json:"thinking_detail,omitempty"`
-	AutoEdit      *bool             `json:"auto_edit,omitempty"`
-	ContextWindow *int64            `json:"context_window,omitempty"`
-	Stream        *bool             `json:"stream,omitempty"`
-	HTTPHeaders   map[string]string `json:"extra_http_headers,omitempty"`
+	APIKey         *string           `json:"api_key,omitempty"`
+	BaseURL        *string           `json:"base_url,omitempty"`
+	Model          *string           `json:"model,omitempty"`
+	Thinking       *bool             `json:"thinking,omitempty"`
+	ThinkingEffort *string           `json:"thinking_effort,omitempty"`
+	ThinkingDetail *bool             `json:"thinking_detail,omitempty"`
+	SendReasoning  *bool             `json:"send_reasoning,omitempty"`
+	AutoEdit       *bool             `json:"auto_edit,omitempty"`
+	ContextWindow  *int64            `json:"context_window,omitempty"`
+	Stream         *bool             `json:"stream,omitempty"`
+	HTTPHeaders    map[string]string `json:"extra_http_headers,omitempty"`
 }
 
 // resolvedProfile returns the profileConfig for the active profile, or nil if
