@@ -554,7 +554,7 @@ func toolCallBrief(tc openai.ChatCompletionMessageToolCallParam) string {
 	json.Unmarshal([]byte(tc.Function.Arguments), &args)
 
 	switch tc.Function.Name {
-	case "bash":
+	case detectedShell.name:
 		return "$ " + args.Command
 	case "write":
 		return fmt.Sprintf("%s (%d bytes)", relPath(args.FilePath), len(args.Content))

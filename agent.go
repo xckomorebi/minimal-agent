@@ -543,8 +543,8 @@ func (a *agent) toolApprovalInfo(call openai.ChatCompletionMessageToolCall) (nee
 	json.Unmarshal([]byte(call.Function.Arguments), &args)
 
 	switch call.Function.Name {
-	case "bash":
-		name = "bash"
+	case detectedShell.name:
+		name = detectedShell.name
 		detail = "$ " + args.Command
 		return args.RequiresApproval, name, detail
 	case "write":
@@ -622,8 +622,8 @@ func (a *agent) runToolCall(ctx context.Context, call openai.ChatCompletionMessa
 		return a.runMCPTool(ctx, call)
 	}
 	switch call.Function.Name {
-	case "bash":
-		return a.runBash(ctx, call)
+	case detectedShell.name:
+		return a.runShell(ctx, call)
 	case "read":
 		return a.readFile(call)
 	case "write":

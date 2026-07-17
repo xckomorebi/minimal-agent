@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/openai/openai-go"
@@ -149,7 +148,7 @@ func parseSkillFrontmatter(content string) string {
 
 func builtinTools() []openai.ChatCompletionToolParam {
 	return []openai.ChatCompletionToolParam{
-		toolDef("bash", "Run a shell command with bash -c and return its combined stdout/stderr.",
+		toolDef(detectedShell.name, fmt.Sprintf("Run a shell command using %s and return its combined stdout/stderr.", detectedShell.name),
 			prop("command", "string", "the shell command to run"),
 			prop("requires_approval", "boolean", "set true for destructive/irreversible operations (writes, deletes, installs, network calls, git push); false for read-only inspection (ls, cat, grep, git status, git diff, go build, etc.)"),
 		),
@@ -203,7 +202,7 @@ func allTools() []openai.ChatCompletionToolParam {
 
 // --- tool implementations ---
 
-func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
+func (a *agent) runShell(ctx context.Context, call openai.ChatCompletionMessageToolCall) openai.ChatCompletionMessageParamUnion {
 	var args struct {
 		Command          string `json:"command"`
 		RequiresApproval bool   `json:"requires_approval"`
@@ -213,9 +212,12 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 	}
 
 	// Approval is handled by the TUI before this is called.
-	// Use a process group so that cancel kills bash and all its children.
-	cmd := exec.Command("bash", "-c", args.Command)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// Use a process group so that cancel kills the shell and all its children.
+	cmdArgs := make([]string, 0, len(detectedShell.args)+1)
+	cmdArgs = append(cmdArgs, detectedShell.args...)
+	cmdArgs = append(cmdArgs, args.Command)
+	cmd := exec.Command(detectedShell.exe, cmdArgs...)
+	setSysProcAttr(cmd)
 
 	var out bytes.Buffer
 	cmd.Stdout = &out
@@ -238,14 +240,14 @@ func (a *agent) runBash(ctx context.Context, call openai.ChatCompletionMessageTo
 			}
 			result += "\n[exit: " + err.Error() + "]"
 		}
-		slog.Debug("bash completed", "command", args.Command, "output_len", len(result))
+		slog.Debug("shell completed", "command", args.Command, "output_len", len(result))
 		if result == "" {
 			result = "(no output)"
 		}
 		return openai.ToolMessage(result, call.ID)
 	case <-ctx.Done():
 		// Kill the entire process group so children don't outlive the cancel.
-		syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		killProcessGroup(cmd)
 		<-done
 		return openai.ToolMessage("error: tool call was cancelled by user (Ctrl-C)", call.ID)
 	}
