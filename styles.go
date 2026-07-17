@@ -510,7 +510,7 @@ func shellBlockLine(content string, blockW int) string {
 // header row with a terminal glyph and language tag, then the command
 // syntax-highlighted on a dark background. The command is soft-wrapped to
 // fit but never reformatted — what the user reads is exactly what will run.
-func renderShellBlock(cmd string, width int) []string {
+func renderShellBlock(name, cmd string, width int) []string {
 	if width < 20 {
 		width = 80
 	}
@@ -519,7 +519,7 @@ func renderShellBlock(cmd string, width int) []string {
 	body := strings.Split(highlightShell(wrapped, inner), "\n")
 
 	// The slab spans the full wrap width, like an editor code block.
-	header := shellBlockHeaderStyle.Render(">_ bash")
+	header := shellBlockHeaderStyle.Render(">_ " + name)
 	out := make([]string, 0, len(body)+1)
 	out = append(out, shellBlockLine(header, width))
 	for _, ln := range body {

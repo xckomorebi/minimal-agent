@@ -1904,14 +1904,14 @@ func (m *tuiModel) commitApproval(name, detail string) {
 	m.approvalDetail = detail
 
 	if cmd, ok := strings.CutPrefix(detail, "$ "); ok {
-		// Bash: a GitHub-style code block (dark slab, syntax highlight).
+		// Shell command: a GitHub-style code block (dark slab, syntax highlight).
 		// No question line — the Approve/Deny options right below are the
 		// question.
 		wrapWidth := m.contentWidth()
 		if wrapWidth < 20 {
 			wrapWidth = 80
 		}
-		for _, line := range renderShellBlock(cmd, wrapWidth) {
+		for _, line := range renderShellBlock(name, cmd, wrapWidth) {
 			m.push(roleAgent, line)
 		}
 		return
