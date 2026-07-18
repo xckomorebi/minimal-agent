@@ -25,6 +25,8 @@ type sessionConfig struct {
 	ThinkingDetail *bool   `json:"thinking_detail,omitempty"`
 	SendReasoning  *bool   `json:"send_reasoning,omitempty"`
 	Stream         *bool   `json:"stream,omitempty"`
+	MaxToolRounds  *int    `json:"max_tool_rounds,omitempty"`
+	MaxRepeatCalls *int    `json:"max_repeat_calls,omitempty"`
 }
 
 // sessionFile is the top-level JSON structure stored in a session file.

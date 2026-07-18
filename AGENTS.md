@@ -70,6 +70,8 @@ Settings configurable via `~/.ma/settings.json`:
   "auto_edit": false,
   "context_window": 200000,
   "stream": true,
+  "max_tool_rounds": 50,
+  "max_repeat_calls": 3,
   "extra_http_headers": {
     "X-Custom-Header": "value"
   },
@@ -95,7 +97,8 @@ All keys are optional — unset keys fall through to the next priority level.
   entry in `profiles` is used as the first source for `api_key`, `base_url`,
   `model`, `thinking`, `thinking_effort`, `thinking_detail`, `send_reasoning`,
   `auto_edit`,
-  `context_window`, `stream`, and `extra_http_headers`. Any field not set in
+  `context_window`, `stream`, `max_tool_rounds`, `max_repeat_calls`,
+  and `extra_http_headers`. Any field not set in
   the profile falls through to the top-level setting, then to lower layers.
   Can also be set per-invocation via `-profile` flag or switched at runtime
   via `/profile <name>`.
@@ -113,6 +116,17 @@ All keys are optional — unset keys fall through to the next priority level.
   at runtime via `/config send-reasoning`.
 - `stream`: when `true` (default), responses stream token-by-token over SSE.
   When `false`, responses arrive in a single non-streaming request.
+- `max_tool_rounds`: maximum number of LLM round-trips with tool calls per turn
+  (default 50). Prevents runaway loops where the agent keeps calling tools
+  without converging. Can also be set at runtime via
+  `/config max-tool-rounds <number>`.
+- `max_repeat_calls`: maximum number of **consecutive** identical tool calls
+  (same name + arguments, back-to-back with no other call in between) allowed
+  within a single turn before it's treated as a cycle (default 3). This catches
+  the agent stuck repeating itself while allowing legitimate patterns like
+  read→edit→read. When exceeded, the turn stops with an error message nudging
+  the model to try a different approach. Can also be set at runtime via
+  `/config max-repeat-calls <number>`.
 
 ## MCP (Model Context Protocol) Support
 

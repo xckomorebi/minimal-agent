@@ -59,7 +59,7 @@ func init() {
 		"config": {
 			name:        "config",
 			description: "show or change configuration",
-			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail, send-reasoning, stream.",
+			detail:      "config [key [value]] — view or change session-level configuration. Keys: model, auto-edit, thinking, thinking-effort (low|medium|high), thinking-detail, send-reasoning, stream, max-tool-rounds, max-repeat-calls.",
 			handler:     cmdConfig,
 		},
 		"context": {
@@ -438,8 +438,8 @@ func (a *agent) handleConfigStr(args []string) string {
 		detail := onOff(a.thinkingDetail())
 		sendReason := onOff(a.sendReasoning())
 		stream := onOff(a.stream())
-		return fmt.Sprintf("model           : %s %s\nauto-edit       : %s\nthinking        : %s\neffort          : %s\ndetail          : %s\nsend-reasoning  : %s\nstream          : %s",
-			model, src, auto, think, effort, detail, sendReason, stream)
+		return fmt.Sprintf("model           : %s %s\nauto-edit       : %s\nthinking        : %s\neffort          : %s\ndetail          : %s\nsend-reasoning  : %s\nstream          : %s\nmax-tool-rounds : %d\nmax-repeat-calls: %d",
+			model, src, auto, think, effort, detail, sendReason, stream, a.maxToolRounds(), a.maxRepeatCalls())
 	}
 	switch args[0] {
 	case "model":
@@ -486,8 +486,30 @@ func (a *agent) handleConfigStr(args []string) string {
 		a.config.Stream = &v
 		a.sessionDirty = true
 		return "stream: " + onOff(v)
+	case "max-tool-rounds":
+		if len(args) < 2 {
+			return "usage: /config max-tool-rounds <number>"
+		}
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 {
+			return "invalid value (must be a positive integer)"
+		}
+		a.config.MaxToolRounds = &n
+		a.sessionDirty = true
+		return fmt.Sprintf("max-tool-rounds: %d", n)
+	case "max-repeat-calls":
+		if len(args) < 2 {
+			return "usage: /config max-repeat-calls <number>"
+		}
+		n, err := strconv.Atoi(args[1])
+		if err != nil || n < 1 {
+			return "invalid value (must be a positive integer)"
+		}
+		a.config.MaxRepeatCalls = &n
+		a.sessionDirty = true
+		return fmt.Sprintf("max-repeat-calls: %d", n)
 	default:
-		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail, send-reasoning, stream"
+		return "unknown config key " + args[0] + "; try model, auto-edit, thinking, thinking-effort, thinking-detail, send-reasoning, stream, max-tool-rounds, max-repeat-calls"
 	}
 }
 
@@ -644,7 +666,7 @@ func commandNames() []string {
 func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 	if len(args) == 0 {
 		if trailingSpace {
-			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream"}
+			return []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream", "max-tool-rounds", "max-repeat-calls"}
 		}
 		return nil // shouldn't happen: empty args without trailing space
 	}
@@ -659,7 +681,7 @@ func autocompleteConfigArg(args []string, trailingSpace bool) []string {
 
 	// If there are no value args and no trailing space, suggest subcommand names.
 	if len(valueArgs) == 0 && !trailingSpace {
-		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream"})
+		return filterPrefix(subName, []string{"thinking", "auto-edit", "thinking-effort", "thinking-detail", "send-reasoning", "model", "stream", "max-tool-rounds", "max-repeat-calls"})
 	}
 
 	// If there's one value arg and no trailing space, filter existing value completions.

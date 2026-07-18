@@ -28,6 +28,8 @@ type globalConfig struct {
 	AutoEdit       *bool             `json:"auto_edit,omitempty"`
 	ContextWindow  *int64            `json:"context_window,omitempty"`
 	Stream         *bool             `json:"stream,omitempty"`
+	MaxToolRounds  *int              `json:"max_tool_rounds,omitempty"`
+	MaxRepeatCalls *int              `json:"max_repeat_calls,omitempty"`
 	HTTPHeaders    map[string]string `json:"extra_http_headers,omitempty"`
 	MCPServers     []mcpServerConfig `json:"mcp_servers,omitempty"`
 	Profile        *string           `json:"profile,omitempty"`
@@ -48,6 +50,8 @@ type profileConfig struct {
 	AutoEdit       *bool             `json:"auto_edit,omitempty"`
 	ContextWindow  *int64            `json:"context_window,omitempty"`
 	Stream         *bool             `json:"stream,omitempty"`
+	MaxToolRounds  *int              `json:"max_tool_rounds,omitempty"`
+	MaxRepeatCalls *int              `json:"max_repeat_calls,omitempty"`
 	HTTPHeaders    map[string]string `json:"extra_http_headers,omitempty"`
 }
 

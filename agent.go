@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,6 +51,15 @@ type agent struct {
 	summary string
 	// summaryGenerated prevents duplicate async summary generation.
 	summaryGenerated bool
+
+	// Flow-control state (reset at the start of each turn):
+	// toolRoundCount tracks the number of LLM round-trips that produced tool
+	// calls in the current turn. lastCallSig tracks the signature of the most
+	// recently executed tool call, and consecutiveRepeatCount tracks how many
+	// times it has been called back-to-back (reset when a different call is made).
+	toolRoundCount        int
+	lastCallSig           string
+	consecutiveRepeatCount int
 }
 
 // tokenUsage tracks token counts for the current conversation state.
@@ -243,6 +253,41 @@ func (a *agent) sendReasoning() bool {
 	return true
 }
 
+// maxToolRounds returns the maximum number of LLM round-trips with tool calls
+// allowed in a single turn. Default is 50.
+func (a *agent) maxToolRounds() int {
+	if a.config.MaxToolRounds != nil {
+		return *a.config.MaxToolRounds
+	}
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.MaxToolRounds != nil {
+			return *p.MaxToolRounds
+		}
+		if c.MaxToolRounds != nil {
+			return *c.MaxToolRounds
+		}
+	}
+	return 50
+}
+
+// maxRepeatCalls returns the maximum number of times the same tool call (same
+// name + arguments) may be executed within a single turn before it's treated
+// as a cycle. Default is 3.
+func (a *agent) maxRepeatCalls() int {
+	if a.config.MaxRepeatCalls != nil {
+		return *a.config.MaxRepeatCalls
+	}
+	if c := readGlobalCfg(); c != nil {
+		if p := c.resolvedProfile(); p != nil && p.MaxRepeatCalls != nil {
+			return *p.MaxRepeatCalls
+		}
+		if c.MaxRepeatCalls != nil {
+			return *c.MaxRepeatCalls
+		}
+	}
+	return 3
+}
+
 func effortString(e shared.ReasoningEffort) string {
 	switch e {
 	case shared.ReasoningEffortLow:
@@ -274,6 +319,9 @@ func (a *agent) sendCritical(msg tea.Msg) {
 // doTurn runs a full agent turn in a goroutine, sending display events to the TUI
 // via the msgCh channel. It handles the full loop: stream → tool calls → stream → ...
 func (a *agent) doTurn(ctx context.Context) {
+	a.toolRoundCount = 0
+	a.lastCallSig = ""
+	a.consecutiveRepeatCount = 0
 	if a.stream() {
 		a.doTurnStreaming(ctx)
 	} else {
@@ -359,6 +407,13 @@ func (a *agent) doTurnStreaming(ctx context.Context) {
 		if !a.processAssistantMessage(ctx, msg) {
 			return
 		}
+		// Flow control: cap consecutive tool-call round-trips per turn.
+		a.toolRoundCount++
+		if a.toolRoundCount >= a.maxToolRounds() {
+			a.sendDisplay(contentMsg(fmt.Sprintf("\n⚠️ Reached max tool-call rounds (%d). Stopping to prevent a runaway loop.", a.maxToolRounds())))
+			a.sendCritical(turnDoneMsg{})
+			return
+		}
 	}
 }
 
@@ -411,6 +466,13 @@ func (a *agent) doTurnNonStreaming(ctx context.Context) {
 		}
 
 		if !a.processAssistantMessage(ctx, msg) {
+			return
+		}
+		// Flow control: cap consecutive tool-call round-trips per turn.
+		a.toolRoundCount++
+		if a.toolRoundCount >= a.maxToolRounds() {
+			a.sendDisplay(contentMsg(fmt.Sprintf("\n⚠️ Reached max tool-call rounds (%d). Stopping to prevent a runaway loop.", a.maxToolRounds())))
+			a.sendCritical(turnDoneMsg{})
 			return
 		}
 	}
@@ -476,6 +538,29 @@ func (a *agent) processAssistantMessage(ctx context.Context, msg openai.ChatComp
 			a.sendCritical(turnErrMsg{ctx.Err()})
 			return false
 		default:
+		}
+
+		// Cycle detection: track consecutive identical tool calls. Only
+		// back-to-back repeats (same tool + args, with no other call in
+		// between) are counted, so legitimate patterns like read→edit→read
+		// are not falsely flagged.
+		sig := call.Function.Name + "(" + call.Function.Arguments + ")"
+		if sig == a.lastCallSig {
+			a.consecutiveRepeatCount++
+		} else {
+			a.lastCallSig = sig
+			a.consecutiveRepeatCount = 1
+		}
+		if a.consecutiveRepeatCount > a.maxRepeatCalls() {
+			a.sendDisplay(toolResultDisplayMsg{result: "⚠️ cycle detected: " + call.Function.Name + " called with the same arguments " + strconv.Itoa(a.consecutiveRepeatCount) + " times in a row"})
+			a.history = append(a.history, openai.ToolMessage(
+				"error: you have called "+call.Function.Name+" with the same arguments "+
+					strconv.Itoa(a.consecutiveRepeatCount)+
+					" consecutive times in this turn. This looks like a cycle — try a different approach or stop if the task is complete.",
+				call.ID))
+			a.appendCancelledResults(calls[i+1:])
+			a.sendCritical(turnDoneMsg{})
+			return false
 		}
 
 		needsApproval, toolName, toolDetail := a.toolApprovalInfo(call)

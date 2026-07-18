@@ -12,9 +12,9 @@ Glob, partial read, plan, and whatever else makes it a sharper agent. Easy to im
 
 Inject extra context into user messages — project-level reminders, hints, and nudges.
 
-* [ ] **Basic flow control**
+* [x] **Basic flow control**
 
-No framework, but a few guardrails are worth it. Max tool-call retries, cycle detection, that kind of thing.
+Max tool-call retries and cycle detection implemented as simple counters in the agent loop. Configurable via `max_tool_rounds` (default 50) and `max_repeat_calls` (default 3) in settings.json or `/config`.
 
 ## Never gonna happen
 
