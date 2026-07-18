@@ -154,6 +154,12 @@ The system prompt is built dynamically at startup, injecting the current working
 directory, git branch, the contents of `AGENTS.md` (if present), and an index of
 available skills — so the agent always knows what project it's working in.
 
+The system prompt is frozen for the lifetime of a session. On resume, the saved
+system message is restored verbatim rather than rebuilt — this preserves
+prefix-cache hits across turns (same approach as Claude Code and Codex CLI).
+Environment changes (shell, cwd, git branch) take effect on the next fresh
+session.
+
 ## Skills
 
 Skills are reusable, on-demand instruction sets stored in `~/.agents/skills/`.

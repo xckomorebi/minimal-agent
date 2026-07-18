@@ -9,7 +9,6 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -38,7 +37,7 @@ func cfgStr(cfg *globalConfig, fn func(*globalConfig) *string) string {
 
 func buildSystemMessage() string {
 	var b strings.Builder
-	b.WriteString("You are a concise CLI coding agent. Use the bash, read, write, edit, web-search, web-fetch, skill, and ask_user_question tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n")
+	b.WriteString(fmt.Sprintf("You are a concise CLI coding agent. Use the %s, read, write, edit, web-search, web-fetch, skill, and ask_user_question tools to inspect and act on the system. Prefer edit over write when changing an existing file. Keep answers short.\n", detectedShell.name))
 	b.WriteString("Editing a file, or overwriting an existing one with write, requires that you already know its current contents. Any earlier read, write, or edit of the file in this session is enough — you need not re-read right before changing it. These tools refuse only when you have never seen the file, or when it changed on disk since you last saw it; in that case read it again to pick up the current contents before retrying. Creating a brand-new file with write is unrestricted. Use the read tool's offset and limit parameters to read specific line ranges from large files instead of loading the entire file.\n")
 	b.WriteString("If an AGENTS.md file exists in the working directory, its contents tell you how to work on this specific project — follow its conventions and guidelines. A global ~/.ma/AGENTS.md may also exist with user-level conventions that apply across all projects.\n")
 	b.WriteString("\n")
@@ -58,6 +57,10 @@ func buildSystemMessage() string {
 		b.WriteString(branch)
 		b.WriteString("\n")
 	}
+
+	b.WriteString("Operating system: ")
+	b.WriteString(osName())
+	b.WriteString("\n")
 
 	// Load global user memory file first (more general), then project memory (more specific).
 	if home, err := os.UserHomeDir(); err == nil {
@@ -150,6 +153,9 @@ func main() {
 	// Build the skill index at startup so it's available in the system prompt.
 	buildSkillIndex()
 
+	// Detect the available shell for the shell tool.
+	detectedShell = detectShell()
+
 	apiKey := firstNonEmpty(*apiKeyFlag,
 		cfgStr(globalCfg, func(c *globalConfig) *string { return c.APIKey }),
 		os.Getenv("MA_API_KEY"))
@@ -238,7 +244,7 @@ func main() {
 	p := tea.NewProgram(m, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion())
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM)
+	signal.Notify(sigCh, os.Interrupt)
 	go func() {
 		<-sigCh
 		cancel()

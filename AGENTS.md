@@ -164,3 +164,9 @@ package and place them in `main_test.go`.
   were authored by the agent itself
 - **Streaming-first**: responses stream over SSE by default (configurable via `stream` setting); the accumulator pattern gathers chunks and converts to a final message for history
 - **TUI**: full-screen terminal UI with viewport scrolling, markdown rendering, approval prompts, interactive session picker, and slash-command autocomplete
+- **Frozen system prompt**: the system prompt (history[0]) is built once at
+  session start and never modified mid-session. On resume, the saved system
+  message is restored verbatim — it is not rebuilt from the current
+  environment. This preserves prefix-cache validity across turns (same as
+  Claude Code and Codex). Environment changes (shell, cwd, git branch) take
+  effect on the next fresh session, not on resume.
