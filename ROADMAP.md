@@ -8,10 +8,6 @@ What's next, what's off the table, and what's still up in the air for minimal-ag
 
 Glob, partial read, plan, and whatever else makes it a sharper agent. Easy to implement and likely a big improvement.
 
-* [ ] **System reminder / injection**
-
-Inject extra context into user messages — project-level reminders, hints, and nudges.
-
 * [x] **Basic flow control**
 
 Max tool-call retries and cycle detection implemented as simple counters in the agent loop. Configurable via `max_tool_rounds` (default 50) and `max_repeat_calls` (default 3) in settings.json or `/config`.
@@ -39,6 +35,20 @@ Implicit "learning" across sessions almost always degrades the experience — th
 Vector DBs, embeddings, chunking — it's a whole infrastructure layer for answering questions over document corpora. This agent already has `read` and `rg`; it doesn't need a retrieval pipeline to work on a codebase it's standing in.
 
 ## Not decided yet
+
+* [ ] **System reminder / injection** (parked)
+
+Inject extra context into user messages — project-level reminders, hints, and nudges.
+
+**Parked because:** every useful reminder type depends on a feature that doesn't exist yet.
+The one genuinely useful case — proactive file-modification detection — is already handled
+reactively (the edit tool refuses stale edits and forces a re-read). TodoWrite reminders need
+a task tool; plan-mode reminders need a plan tool; IDE diagnostics need IDE integration
+(explicitly "never gonna happen"). System reminders are glue *for other features* — they're
+infrastructure without a payload until those features land. Revisit when plan mode or a
+todo/task tool is on the table. Claude Code's own implementation (15+ injection types, infinite
+loops, 15%+ context window consumed by hidden text, model confusing reminders with user input)
+is also a cautionary tale on complexity.
 
 * [ ] **Sub-agents**
 
