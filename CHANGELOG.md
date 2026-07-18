@@ -5,6 +5,28 @@ All notable changes to minimal-agent will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.0] - 2025-07-17
+
+### Added
+
+- **Flow control**: `max_tool_rounds` (default 50) caps LLM round-trips with tool calls per turn; `max_repeat_calls` (default 3) detects consecutive identical tool calls and stops runaway cycles. Both configurable via `~/.ma/settings.json` or `/config`.
+- **Reasoning persistence**: `reasoning_content` from assistant messages is now persisted in session history and can be sent back to the API so the model references its prior chain-of-thought. Controlled by `send_reasoning` config (default `true`); toggle at runtime via `/config send-reasoning`.
+- **Read tool offset/limit**: `read` tool now accepts `offset` and `limit` parameters for reading specific line ranges from large files. Parameter `path` renamed to `file_path`.
+
+### Changed
+
+- **Windows native support**: no longer requires WSL — runs natively on Windows with proper shell detection and path handling.
+- ROADMAP.md: system reminder/injection (issue #3) moved from Planned to Not decided yet (parked until a dependency feature like plan mode or a todo tool lands).
+
+### Fixed
+
+- Context percentage inflated by accumulated streaming usage — now based on actual prompt token count.
+- Denied tool call with a reason now continues the turn instead of stopping; denial without a reason stops the turn as before.
+- Forward Ctrl-N/Ctrl-P to textarea for multi-line cursor navigation instead of being swallowed by the TUI.
+- Resolved all gopls/staticcheck diagnostics.
+
+---
+
 ## [v0.1.1] - 2025-07-17
 
 ### Changed
@@ -113,7 +135,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Multi-line tool results padded correctly.
 - Sticky-bottom auto-follow that respects manual scrolling.
 
-[Unreleased]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/xckomorebi/minimal-agent/compare/v0.2.0...HEAD
+[v0.2.0]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.1...v0.2.0
 [v0.1.1]: https://github.com/xckomorebi/minimal-agent/compare/v0.1.0...v0.1.1
 [v0.1.0]: https://github.com/xckomorebi/minimal-agent/compare/v0.0.2...v0.1.0
 [v0.0.2]: https://github.com/xckomorebi/minimal-agent/compare/v0.0.1...v0.0.2
